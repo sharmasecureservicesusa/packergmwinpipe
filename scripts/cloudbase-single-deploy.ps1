@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param (
     [Parameter(Mandatory = $false)]
-    [Security.SecureString]$AdminPassword = (ConvertTo-SecureString "ChangeMeSecurely123!" -AsPlainText -Force)
+    [Security.SecureString]$AdminPassword = $null
 )
 
 $ErrorActionPreference = 'Stop'
