@@ -1,31 +1,55 @@
 name: Packer Golden Image Factory
 
 on:
-  pull_request:
-    paths:
-      - 'build/**'
-      - '.github/workflows/packer.yml'
-  push:
-    branches:
-      - main
-    tags:
-      - 'v*.*.*'
-  workflow_dispatch: # Allows manual trigger from GitHub UI
+  workflow_dispatch:
     inputs:
       force_build:
         description: 'Force full image build'
         type: boolean
         default: false
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+    paths:
+      - "build/**"
+      - "scripts/**"
+      - ".github/workflows/build.yml"
+      - ".github/workflows/packer.yml"
+      - ".github/workflows/packer-build.yml"
+  pull_request:
+    paths:
+      - 'build/**'
+      - '.github/workflows/packer.yml'
+      - '.github/workflows/packer-build.yml'
+
+# Required GitHub Actions secrets (Settings -> Secrets and variables -> Actions):
+#   ISO_URL                    URL or file path to the Windows Server 2022 ISO
+#   ISO_CHECKSUM               sha256:... checksum of the ISO
+#   WINRM_PASSWORD             temp build password (must be XML-safe: no < or &)
+#   CLOUDFLARE_LOG_INGEST_URL  (optional) Cloudflare Pipelines ingest URL
+#   CLOUDFLARE_API_KEY         (optional) Cloudflare Pipelines API key
+#   MEGA_S4_ACCESS_KEY         (S4 upload) MEGA S4 access key
+#   MEGA_S4_SECRET_KEY         (S4 upload) MEGA S4 secret key
+#   MEGA_S4_ENDPOINT           (S4 upload) MEGA S4 endpoint URL
+#   MEGA_S4_BUCKET             (S4 upload) MEGA S4 bucket name
+#
+# The writable Packer variable file (build/ci.pkrvars.hcl) is generated at runtime
+# from these secrets (and gitignored). No secret material is ever committed.
 
 permissions:
   contents: read
   id-token: write # Required if using OIDC to authenticate with AWS/Azure/GCP
 
 env:
-  PACKER_VERSION: "1.10.0"
+  PACKER_VERSION: "1.14.2"
   PACKER_PLUGIN_PATH: "~/.packer.d/plugins"
 
 jobs:
+  # =========================================================================
+  # JOB 1: Lint & Validate Packer Template
+  # =========================================================================
   validate:
     name: Lint & Validate Packer Template
     runs-on: ubuntu-latest
@@ -35,7 +59,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Packer CLI
-        uses: hashicorp/setup-packer@main
+        uses: hashicorp/setup-packer@v3
         with:
           version: ${{ env.PACKER_VERSION }}
 
@@ -54,19 +78,31 @@ jobs:
       - name: Validate Template
         run: packer validate -syntax-only build/
 
+  # =========================================================================
+  # JOB 2: Build & Publish Image
+  # =========================================================================
   build:
     name: Build & Publish Image
     needs: validate
-    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || inputs.force_build == true
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || inputs.force_build == true || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
 
     env:
       PACKER_LOG: 1
       PACKER_LOG_PATH: "packer-debug.log"
+      # Consumed by scripts/generate-autounattend.sh to render the answer file.
+      WINRM_PASSWORD: ${{ secrets.WINRM_PASSWORD }}
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+
+      - name: Install QEMU / KVM
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 qemu-utils
+          # Ensure the runner can use hardware acceleration.
+          if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; fi
 
       - name: Configure KVM Permissions (If QEMU)
         run: |
@@ -75,7 +111,7 @@ jobs:
           fi
 
       - name: Setup Packer CLI
-        uses: hashicorp/setup-packer@main
+        uses: hashicorp/setup-packer@v3
         with:
           version: ${{ env.PACKER_VERSION }}
 
@@ -87,6 +123,10 @@ jobs:
 
       - name: Packer Init
         run: packer init build/
+
+      # Render the answer file from the committed template using the secret.
+      - name: Generate Autounattend.xml
+        run: ./scripts/generate-autounattend.sh
 
       # Write a non-committed Packer variable file from GitHub secrets.
       - name: Write Packer variables from GitHub secrets
@@ -105,15 +145,12 @@ jobs:
           image_version  = "$IMAGE_VER"
           EOF
 
-      # 2. Syntax & HCL format check
       - name: Packer Format Check
         run: packer fmt -check build/
 
-      # 3. Validate template & variables
       - name: Packer Validate
         run: packer validate -var-file="build/ci.pkrvars.hcl" build/
 
-      # 4. Production Build with Recommended Runner Flags
       - name: Packer Build
         run: |
           packer build \
@@ -130,6 +167,14 @@ jobs:
         with:
           name: packer-log
           path: packer-debug.log
+
+      - name: Upload image artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-server-golden-image
+          path: output-*
+          retention-days: 7
 
       - name: Compress QCOW2 and Generate Checksum
         run: |
