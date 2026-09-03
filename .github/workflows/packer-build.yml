@@ -66,6 +66,51 @@ jobs:
         with:
           version: ${{ env.PACKER_VERSION }}
 
+      # --- Download the Windows ISO from MEGA S4 (cached across runs) ---
+      - name: Configure AWS CLI for MEGA S4 (ISO source)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.MEGA_S4_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.MEGA_S4_SECRET_KEY }}
+          AWS_DEFAULT_REGION: "us-east-1"
+        run: |
+          aws configure set default.s3.multipart_threshold 64MB
+          aws configure set default.s3.multipart_chunksize 64MB
+          aws configure set default.s3.max_concurrent_requests 10
+
+      - name: Resolve ISO version from MEGA S4
+        id: iso
+        env:
+          S4_ENDPOINT: "https://s3.ca-vancouver-1.megas4.com"
+          S4_BUCKET_ISO: "installmedia"
+          S4_KEY_ISO: "virtiowiniso/winisowithvirtio/Winserver2025-VirtIO.iso"
+        run: |
+          ETAG=$(aws s3api head-object \
+                  --bucket "$S4_BUCKET_ISO" \
+                  --key "$S4_KEY_ISO" \
+                  --endpoint-url "$S4_ENDPOINT" \
+                  --query ETag --output text | tr -d '"')
+          echo "Resolved ISO ETag: $ETAG"
+          echo "iso_etag=$ETAG" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Windows ISO
+        id: cache-iso
+        uses: actions/cache@v4
+        with:
+          path: iso/Winserver2025-VirtIO.iso
+          key: iso-${{ steps.iso.outputs.iso_etag }}
+
+      - name: Download Windows ISO from MEGA S4
+        if: steps.cache-iso.outputs.cache-hit != 'true'
+        env:
+          S4_ENDPOINT: "https://s3.ca-vancouver-1.megas4.com"
+        run: |
+          mkdir -p iso
+          aws s3 cp \
+            "s3://installmedia/virtiowiniso/winisowithvirtio/Winserver2025-VirtIO.iso" \
+            "iso/Winserver2025-VirtIO.iso" \
+            --endpoint-url "$S4_ENDPOINT" \
+            --no-progress
+
       - name: Cache Packer Plugins
         uses: actions/cache@v4
         with:
@@ -127,11 +172,61 @@ jobs:
       - name: Packer Init
         run: packer init build/
 
+      # --- Download the Windows ISO from MEGA S4 (cached across runs) ---
+      - name: Configure AWS CLI for MEGA S4 (ISO source)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.MEGA_S4_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.MEGA_S4_SECRET_KEY }}
+          AWS_DEFAULT_REGION: "us-east-1"
+        run: |
+          aws configure set default.s3.multipart_threshold 64MB
+          aws configure set default.s3.multipart_chunksize 64MB
+          aws configure set default.s3.max_concurrent_requests 10
+
+      # Resolve the current "version" of the ISO in S4 via its ETag. Using the ETag
+      # as the cache key means a re-uploaded/updated object invalidates the GitHub
+      # Actions cache and forces a fresh download on the next run.
+      - name: Resolve ISO version from MEGA S4
+        id: iso
+        env:
+          S4_ENDPOINT: "https://s3.ca-vancouver-1.megas4.com"
+          S4_BUCKET_ISO: "installmedia"
+          S4_KEY_ISO: "virtiowiniso/winisowithvirtio/Winserver2025-VirtIO.iso"
+        run: |
+          ETAG=$(aws s3api head-object \
+                  --bucket "$S4_BUCKET_ISO" \
+                  --key "$S4_KEY_ISO" \
+                  --endpoint-url "$S4_ENDPOINT" \
+                  --query ETag --output text | tr -d '"')
+          echo "Resolved ISO ETag: $ETAG"
+          echo "iso_etag=$ETAG" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Windows ISO
+        id: cache-iso
+        uses: actions/cache@v4
+        with:
+          path: iso/Winserver2025-VirtIO.iso
+          key: iso-${{ steps.iso.outputs.iso_etag }}
+
+      - name: Download Windows ISO from MEGA S4
+        if: steps.cache-iso.outputs.cache-hit != 'true'
+        env:
+          S4_ENDPOINT: "https://s3.ca-vancouver-1.megas4.com"
+        run: |
+          mkdir -p iso
+          aws s3 cp \
+            "s3://installmedia/virtiowiniso/winisowithvirtio/Winserver2025-VirtIO.iso" \
+            "iso/Winserver2025-VirtIO.iso" \
+            --endpoint-url "$S4_ENDPOINT" \
+            --no-progress
+
       # Render the answer file from the committed template using the secret.
       - name: Generate Autounattend.xml
         run: ./scripts/generate-autounattend.sh
 
       # Write a non-committed Packer variable file from GitHub secrets.
+      # The ISO is the locally cached download from MEGA S4; its checksum is computed
+      # from the actual file so Packer can verify integrity on every run.
       - name: Write Packer variables from GitHub secrets
         run: |
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
@@ -139,9 +234,13 @@ jobs:
           else
             IMAGE_VER="1.0.${{ github.run_number }}"
           fi
-          cat > build/ci.pkrvars.hcl <<'EOF'
-          iso_url        = "${{ secrets.ISO_URL }}"
-          iso_checksum   = "${{ secrets.ISO_CHECKSUM }}"
+
+          ISO_PATH="${{ github.workspace }}/iso/Winserver2025-VirtIO.iso"
+          ISO_SHA256=$(sha256sum "$ISO_PATH" | awk '{print $1}')
+
+          cat > build/ci.pkrvars.hcl <<EOF
+          iso_url        = "$ISO_PATH"
+          iso_checksum   = "sha256:${ISO_SHA256}"
           winrm_password = "${{ secrets.WINRM_PASSWORD }}"
           log_ingest_url = "${{ secrets.CLOUDFLARE_LOG_INGEST_URL }}"
           log_api_key    = "${{ secrets.CLOUDFLARE_API_KEY }}"
