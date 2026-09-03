@@ -67,7 +67,10 @@ jobs:
           version: ${{ env.PACKER_VERSION }}
 
       # --- Download the Windows ISO from MEGA S4 (cached across runs) ---
+      # Guarded off PRs: `validate` only runs `packer validate -syntax-only`, which
+      # never reads the ISO, so skip the multi-GB download on pull requests.
       - name: Configure AWS CLI for MEGA S4 (ISO source)
+        if: github.event_name != 'pull_request'
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.MEGA_S4_ACCESS_KEY }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.MEGA_S4_SECRET_KEY }}
@@ -79,6 +82,7 @@ jobs:
 
       - name: Resolve ISO version from MEGA S4
         id: iso
+        if: github.event_name != 'pull_request'
         env:
           S4_ENDPOINT: "https://s3.ca-vancouver-1.megas4.com"
           S4_BUCKET_ISO: "installmedia"
@@ -94,13 +98,14 @@ jobs:
 
       - name: Cache Windows ISO
         id: cache-iso
+        if: github.event_name != 'pull_request'
         uses: actions/cache@v4
         with:
           path: iso/Winserver2025-VirtIO.iso
           key: iso-${{ steps.iso.outputs.iso_etag }}
 
       - name: Download Windows ISO from MEGA S4
-        if: steps.cache-iso.outputs.cache-hit != 'true'
+        if: github.event_name != 'pull_request' && steps.cache-iso.outputs.cache-hit != 'true'
         env:
           S4_ENDPOINT: "https://s3.ca-vancouver-1.megas4.com"
         run: |
@@ -110,7 +115,6 @@ jobs:
             "iso/Winserver2025-VirtIO.iso" \
             --endpoint-url "$S4_ENDPOINT" \
             --no-progress
-
       - name: Cache Packer Plugins
         uses: actions/cache@v4
         with:
