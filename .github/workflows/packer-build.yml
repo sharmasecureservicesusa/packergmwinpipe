@@ -25,15 +25,18 @@ on:
       - '.github/workflows/packer-build.yml'
 
 # Required GitHub Actions secrets (Settings -> Secrets and variables -> Actions):
-#   ISO_URL                    URL or file path to the Windows Server 2022 ISO
-#   ISO_CHECKSUM               sha256:... checksum of the ISO
 #   WINRM_PASSWORD             temp build password (must be XML-safe: no < or &)
+#   MEGA_S4_ACCESS_KEY         MEGA S4 access key (ISO source + image upload)
+#   MEGA_S4_SECRET_KEY         MEGA S4 secret key (ISO source + image upload)
+#   MEGA_S4_ENDPOINT           MEGA S4 endpoint URL (ISO source + image upload)
+#   MEGA_S4_BUCKET             MEGA S4 bucket for built image uploads
 #   CLOUDFLARE_LOG_INGEST_URL  (optional) Cloudflare Pipelines ingest URL
 #   CLOUDFLARE_API_KEY         (optional) Cloudflare Pipelines API key
-#   MEGA_S4_ACCESS_KEY         (S4 upload) MEGA S4 access key
-#   MEGA_S4_SECRET_KEY         (S4 upload) MEGA S4 secret key
-#   MEGA_S4_ENDPOINT           (S4 upload) MEGA S4 endpoint URL
-#   MEGA_S4_BUCKET             (S4 upload) MEGA S4 bucket name
+#
+# The Windows ISO is downloaded from MEGA S4
+# (s3://installmedia/virtiowiniso/winisowithvirtio/Winserver2025-VirtIO.iso) at build
+# time and cached in GitHub Actions, keyed by the object's S3 ETag. When the ISO in S4
+# is updated (new ETag) the cache is invalidated and re-downloaded on the next run.
 #
 # The writable Packer variable file (build/ci.pkrvars.hcl) is generated at runtime
 # from these secrets (and gitignored). No secret material is ever committed.
