@@ -69,6 +69,18 @@ jobs:
       # --- Download the Windows ISO from MEGA S4 (cached across runs) ---
       # Guarded off PRs: `validate` only runs `packer validate -syntax-only`, which
       # never reads the ISO, so skip the multi-GB download on pull requests.
+      - name: Preflight MEGA S4 credentials (ISO source)
+        if: github.event_name != 'pull_request'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.MEGA_S4_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.MEGA_S4_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${AWS_ACCESS_KEY_ID}" ] || [ -z "${AWS_SECRET_ACCESS_KEY}" ]; then
+            echo "::error::Missing required MEGA S4 credentials. Set repository secrets MEGA_S4_ACCESS_KEY and MEGA_S4_SECRET_KEY."
+            exit 1
+          fi
+
       - name: Configure AWS CLI for MEGA S4 (ISO source)
         if: github.event_name != 'pull_request'
         env:
@@ -88,11 +100,15 @@ jobs:
           S4_BUCKET_ISO: "installmedia"
           S4_KEY_ISO: "virtiowiniso/winisowithvirtio/Winserver2025-VirtIO.iso"
         run: |
-          ETAG=$(aws s3api head-object \
-                  --bucket "$S4_BUCKET_ISO" \
-                  --key "$S4_KEY_ISO" \
-                  --endpoint-url "$S4_ENDPOINT" \
-                  --query ETag --output text | tr -d '"')
+          set -euo pipefail
+          if ! ETAG=$(aws s3api head-object \
+                      --bucket "$S4_BUCKET_ISO" \
+                      --key "$S4_KEY_ISO" \
+                      --endpoint-url "$S4_ENDPOINT" \
+                      --query ETag --output text | tr -d '"'); then
+            echo "::error::Unable to resolve ISO ETag from MEGA S4. Verify MEGA_S4_ACCESS_KEY/MEGA_S4_SECRET_KEY and S4 object access."
+            exit 1
+          fi
           echo "Resolved ISO ETag: $ETAG"
           echo "iso_etag=$ETAG" >> "$GITHUB_OUTPUT"
 
@@ -177,6 +193,17 @@ jobs:
         run: packer init build/
 
       # --- Download the Windows ISO from MEGA S4 (cached across runs) ---
+      - name: Preflight MEGA S4 credentials (ISO source)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.MEGA_S4_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.MEGA_S4_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${AWS_ACCESS_KEY_ID}" ] || [ -z "${AWS_SECRET_ACCESS_KEY}" ]; then
+            echo "::error::Missing required MEGA S4 credentials. Set repository secrets MEGA_S4_ACCESS_KEY and MEGA_S4_SECRET_KEY."
+            exit 1
+          fi
+
       - name: Configure AWS CLI for MEGA S4 (ISO source)
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.MEGA_S4_ACCESS_KEY }}
@@ -197,11 +224,15 @@ jobs:
           S4_BUCKET_ISO: "installmedia"
           S4_KEY_ISO: "virtiowiniso/winisowithvirtio/Winserver2025-VirtIO.iso"
         run: |
-          ETAG=$(aws s3api head-object \
-                  --bucket "$S4_BUCKET_ISO" \
-                  --key "$S4_KEY_ISO" \
-                  --endpoint-url "$S4_ENDPOINT" \
-                  --query ETag --output text | tr -d '"')
+          set -euo pipefail
+          if ! ETAG=$(aws s3api head-object \
+                      --bucket "$S4_BUCKET_ISO" \
+                      --key "$S4_KEY_ISO" \
+                      --endpoint-url "$S4_ENDPOINT" \
+                      --query ETag --output text | tr -d '"'); then
+            echo "::error::Unable to resolve ISO ETag from MEGA S4. Verify MEGA_S4_ACCESS_KEY/MEGA_S4_SECRET_KEY and S4 object access."
+            exit 1
+          fi
           echo "Resolved ISO ETag: $ETAG"
           echo "iso_etag=$ETAG" >> "$GITHUB_OUTPUT"
 
