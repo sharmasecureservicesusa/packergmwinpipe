@@ -131,7 +131,11 @@ jobs:
                       --key "$S4_KEY_ISO" \
                       --endpoint-url "$S4_ENDPOINT" \
                       --query ETag --output text | tr -d '"'); then
-            echo "::error::Unable to resolve ISO ETag from MEGA S4. Verify MEGA_S4_ACCESS_KEY/MEGA_S4_SECRET_KEY and S4 object access."
+            echo "::error::ISO not found at s3://$S4_BUCKET_ISO/$S4_KEY_ISO (404). Listing bucket to help locate the real path:"
+            echo "--- top-level of bucket '$S4_BUCKET_ISO' ---"
+            aws s3 ls "s3://$S4_BUCKET_ISO/" --endpoint-url "$S4_ENDPOINT" || true
+            echo "--- objects matching *.iso under '$S4_BUCKET_ISO' ---"
+            aws s3 ls "s3://$S4_BUCKET_ISO/" --recursive --endpoint-url "$S4_ENDPOINT" | grep -i '\.iso' || echo "(no .iso objects found)"
             exit 1
           fi
           echo "Resolved ISO ETag: $ETAG"
@@ -280,19 +284,17 @@ jobs:
                       --key "$S4_KEY_ISO" \
                       --endpoint-url "$S4_ENDPOINT" \
                       --query ETag --output text | tr -d '"'); then
-            echo "::error::Unable to resolve ISO ETag from MEGA S4. Verify MEGA_S4_ACCESS_KEY/MEGA_S4_SECRET_KEY and S4 object access."
+            echo "::error::ISO not found at s3://$S4_BUCKET_ISO/$S4_KEY_ISO (404). Listing bucket to help locate the real path:"
+            echo "--- top-level of bucket '$S4_BUCKET_ISO' ---"
+            aws s3 ls "s3://$S4_BUCKET_ISO/" --endpoint-url "$S4_ENDPOINT" || true
+            echo "--- objects matching *.iso under '$S4_BUCKET_ISO' ---"
+            aws s3 ls "s3://$S4_BUCKET_ISO/" --recursive --endpoint-url "$S4_ENDPOINT" | grep -i '\.iso' || echo "(no .iso objects found)"
             exit 1
           fi
           echo "Resolved ISO ETag: $ETAG"
           echo "iso_etag=$ETAG" >> "$GITHUB_OUTPUT"
 
       - name: Cache Windows ISO
-        env:
-          S4_BUCKET_ISO: "installmedia"
-          S4_KEY_ISO: "virtiowiniso/winisowithvirtio/Winserver2025-VirtIO.iso"
-          AWS_ACCESS_KEY_ID: ${{ secrets.MEGA_S4_ACCESS_KEY }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.MEGA_S4_SECRET_KEY }}
-          S4_ENDPOINT: "https://s3.ca-vancouver-1.megas4.com"
         id: cache-iso
         uses: actions/cache@v4
         with:
