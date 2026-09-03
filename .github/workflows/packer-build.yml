@@ -89,30 +89,27 @@ jobs:
       # --- Download the Windows ISO from MEGA S4 (cached across runs) ---
       # Guarded off PRs: `validate` only runs `packer validate -syntax-only`, which
       # never reads the ISO, so skip the multi-GB download on pull requests.
-      - name: Preflight MEGA S4 credentials (ISO source)
+      - name: Preflight required secrets
         if: github.event_name != 'pull_request'
-        env:
-          S4_BUCKET_ISO: "installmedia"
-          S4_KEY_ISO: "virtiowiniso/winisowithvirtio/Winserver2025-VirtIO.iso"
-          AWS_ACCESS_KEY_ID: ${{ secrets.MEGA_S4_ACCESS_KEY }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.MEGA_S4_SECRET_KEY }}
-          S4_ENDPOINT: "https://s3.ca-vancouver-1.megas4.com"
         run: |
           set -euo pipefail
-          if [ -z "${AWS_ACCESS_KEY_ID}" ] || [ -z "${AWS_SECRET_ACCESS_KEY}" ]; then
-            echo "::error::Missing required MEGA S4 credentials. Set repository secrets MEGA_S4_ACCESS_KEY and MEGA_S4_SECRET_KEY."
+          missing=0
+          for var in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY S4_ENDPOINT S4_BUCKET \
+                     S4_BUCKET_ISO S4_KEY_ISO WINRM_PASSWORD \
+                     CLOUDFLARE_LOG_INGEST_URL CLOUDFLARE_API_KEY; do
+            if [ -z "${!var:-}" ]; then
+              echo "::error::Missing required value: $var"
+              missing=1
+            fi
+          done
+          if [ "$missing" -eq 1 ]; then
+            echo "::error::One or more required secrets/vars are not set. Configure them under Settings -> Secrets and variables -> Actions."
             exit 1
           fi
+          echo "All required secrets/vars are present."
 
       - name: Configure AWS CLI for MEGA S4 (ISO source)
         if: github.event_name != 'pull_request'
-        env:
-          S4_BUCKET_ISO: "installmedia"
-          S4_KEY_ISO: "virtiowiniso/winisowithvirtio/Winserver2025-VirtIO.iso"
-          AWS_ACCESS_KEY_ID: ${{ secrets.MEGA_S4_ACCESS_KEY }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.MEGA_S4_SECRET_KEY }}
-          S4_ENDPOINT: "https://s3.ca-vancouver-1.megas4.com"
-          AWS_DEFAULT_REGION: "us-east-1"
         run: |
           aws configure set default.s3.multipart_threshold 64MB
           aws configure set default.s3.multipart_chunksize 64MB
@@ -241,28 +238,25 @@ jobs:
         run: packer init build/
 
       # --- Download the Windows ISO from MEGA S4 (cached across runs) ---
-      - name: Preflight MEGA S4 credentials (ISO source)
-        env:
-          S4_BUCKET_ISO: "installmedia"
-          S4_KEY_ISO: "virtiowiniso/winisowithvirtio/Winserver2025-VirtIO.iso"
-          AWS_ACCESS_KEY_ID: ${{ secrets.MEGA_S4_ACCESS_KEY }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.MEGA_S4_SECRET_KEY }}
-          S4_ENDPOINT: "https://s3.ca-vancouver-1.megas4.com"
+      - name: Preflight required secrets
         run: |
           set -euo pipefail
-          if [ -z "${AWS_ACCESS_KEY_ID}" ] || [ -z "${AWS_SECRET_ACCESS_KEY}" ]; then
-            echo "::error::Missing required MEGA S4 credentials. Set repository secrets MEGA_S4_ACCESS_KEY and MEGA_S4_SECRET_KEY."
+          missing=0
+          for var in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY S4_ENDPOINT S4_BUCKET \
+                     S4_BUCKET_ISO S4_KEY_ISO WINRM_PASSWORD \
+                     CLOUDFLARE_LOG_INGEST_URL CLOUDFLARE_API_KEY; do
+            if [ -z "${!var:-}" ]; then
+              echo "::error::Missing required value: $var"
+              missing=1
+            fi
+          done
+          if [ "$missing" -eq 1 ]; then
+            echo "::error::One or more required secrets/vars are not set. Configure them under Settings -> Secrets and variables -> Actions."
             exit 1
           fi
+          echo "All required secrets/vars are present."
 
       - name: Configure AWS CLI for MEGA S4 (ISO source)
-        env:
-          S4_BUCKET_ISO: "installmedia"
-          S4_KEY_ISO: "virtiowiniso/winisowithvirtio/Winserver2025-VirtIO.iso"
-          AWS_ACCESS_KEY_ID: ${{ secrets.MEGA_S4_ACCESS_KEY }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.MEGA_S4_SECRET_KEY }}
-          S4_ENDPOINT: "https://s3.ca-vancouver-1.megas4.com"
-          AWS_DEFAULT_REGION: "us-east-1"
         run: |
           aws configure set default.s3.multipart_threshold 64MB
           aws configure set default.s3.multipart_chunksize 64MB
