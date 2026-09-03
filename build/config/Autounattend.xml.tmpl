@@ -69,11 +69,11 @@
       <DriverPaths>
         <!-- Drivers are served from the supplemental CD (floppy is not supported
              under UEFI). cd_files generates a second CD-ROM that QEMU mounts as
-             E: (the install ISO is D:), and cd_files preserves the sub-directory
-             structure of build/config/virtio, so the viostor storage driver is
-             at E:\viostor. -->
+             E: (the install ISO is D:), and it preserves the build/config/virtio
+             base directory, so the viostor storage driver lands at
+             E:\virtio\viostor. -->
         <PathAndCredentials wcm:keyValue="1" wcm:action="add">
-          <Path>E:\viostor</Path>
+          <Path>E:\virtio\viostor</Path>
         </PathAndCredentials>
       </DriverPaths>
     </component>

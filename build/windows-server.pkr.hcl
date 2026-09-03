@@ -180,10 +180,10 @@ source "qemu" "windows" {
   winrm_insecure = true
 
   # Answer file + VirtIO storage driver served from the generated supplemental CD.
-  # cd_files preserves the sub-directory structure of a listed directory, so
-  # build/config/virtio lands as /viostor, /NetKVM, etc. on that CD. QEMU mounts
-  # the install ISO as D: and this cd_files CD as E:, so Autounattend.xml points
-  # the windowsPE driver path at E:\viostor.
+  # cd_files preserves the build/config/virtio base directory on the CD, so the
+  # drivers land as /virtio/viostor, /virtio/NetKVM, etc. QEMU mounts the install
+  # ISO as D: and this cd_files CD as E:, so Autounattend.xml points the windowsPE
+  # driver path at E:\virtio\viostor.
   cd_files = [
     "./build/config/Autounattend.xml",
     "./build/config/virtio"

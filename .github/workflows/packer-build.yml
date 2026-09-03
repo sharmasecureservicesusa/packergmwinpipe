@@ -248,6 +248,10 @@ jobs:
           mkdir -p build/config/virtio/viostor
           cp -a "$driver_dir/." build/config/virtio/viostor/
           cp "$installer" build/config/virtio/virtio-win-gt-x64.msi
+          # Files extracted from the virtio-win ISO can carry restrictive modes;
+          # ensure Packer's cd_files CD builder can read them and create
+          # directories with the same (writable) mode in its temp staging area.
+          chmod -R a+rwX build/config/virtio
       - name: Resolve Image Version
         id: version
         run: |
