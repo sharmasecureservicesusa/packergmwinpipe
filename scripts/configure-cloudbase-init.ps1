@@ -25,6 +25,7 @@ if (-not (Get-Command Get-DeploymentLogger -ErrorAction SilentlyContinue)) {
 
 $Logger = Get-DeploymentLogger
 
+try {
 $cbiConfDir = "C:\Program Files\Cloudbase Solutions\Cloudbase-Init\conf"
 # The Packer file provisioner copies build/config -> C:\Windows\Temp\config on the guest.
 $configSrc = "C:\Windows\Temp\config"
@@ -38,4 +39,7 @@ Copy-Item -Path "$configSrc\cloudbase-init-unattend.conf" `
           -Force
 
 $Logger.Log("Both Cloudbase-Init configurations placed successfully.", "NOTICE")
-$Logger.Flush()
+} finally {
+    # Ensure buffered telemetry is shipped even if the script fails mid-way.
+    if ($Logger) { $Logger.Flush() }
+}

@@ -26,6 +26,7 @@ if (-not (Get-Command Get-DeploymentLogger -ErrorAction SilentlyContinue)) {
 
 $Logger = Get-DeploymentLogger
 
+try {
 $DownloadUrl = "https://www.cloudbase.it/downloads/CloudbaseInitSetup_Stable_x64.msi"
 $Logger.Log("Downloading Cloudbase-Init from $DownloadUrl...", "INFO")
 
@@ -56,4 +57,7 @@ Set-Service -Name "cloudbase-init" -StartupType Automatic
 Remove-Item -Path $msiFile -Force -ErrorAction SilentlyContinue
 
 $Logger.Log("Cloudbase-Init installation and service configuration complete.", "NOTICE")
-$Logger.Flush()
+} finally {
+    # Ensure buffered telemetry is shipped even if the script fails mid-way.
+    if ($Logger) { $Logger.Flush() }
+}

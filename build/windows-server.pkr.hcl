@@ -167,6 +167,13 @@ source "qemu" "windows" {
     ["-cpu", "host"],
     ["-smp", "${var.cpu_cores},sockets=1,cores=${var.cpu_cores},threads=1"]
   ]
+
+  # Headless diagnostics: capture the guest screen over VNC so we can see where
+  # Windows Setup stops (disk driver, image selection, OOBE, etc.) instead of
+  # guessing while it sits at "Waiting for WinRM".
+  vnc_bind_address = "0.0.0.0"
+  vnc_port_min     = 5900
+  vnc_port_max     = 5900
 }
 
 build {
