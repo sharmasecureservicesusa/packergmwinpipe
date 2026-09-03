@@ -152,9 +152,14 @@ source "qemu" "windows" {
   winrm_use_ssl  = false
   winrm_insecure = true
 
-  # Answer file + VirtIO drivers served from the generated CD (CD root).
+  # Answer file served from the generated CD (CD root).
   cd_files = [
-    "./build/config/Autounattend.xml",
+    "./build/config/Autounattend.xml"
+  ]
+
+  # VirtIO storage/network drivers served from a floppy, which Windows Setup mounts
+  # as A:\. This matches the A:\virtio driver path referenced in Autounattend.xml.
+  floppy_dirs = [
     "./build/config/virtio"
   ]
 
