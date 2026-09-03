@@ -105,6 +105,12 @@ variable "winrm_password" {
   sensitive   = true
 }
 
+variable "winrm_timeout" {
+  type        = string
+  description = "How long to wait for WinRM to become available before failing the build"
+  default     = "2h"
+}
+
 # Cloudflare Telemetry Variables
 variable "log_ingest_url" {
   type        = string
@@ -146,7 +152,7 @@ source "qemu" "windows" {
   communicator   = "winrm"
   winrm_username = var.winrm_username
   winrm_password = var.winrm_password
-  winrm_timeout  = "2h"
+  winrm_timeout  = var.winrm_timeout
   # Cleartext WinRM (no SSL) is acceptable here because the build runs on an
   # isolated QEMU/KVM virtual network. For shared networks, set winrm_use_ssl = true.
   winrm_use_ssl  = false

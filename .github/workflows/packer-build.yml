@@ -397,6 +397,8 @@ jobs:
           log_ingest_url = "${CLOUDFLARE_LOG_INGEST_URL}"
           log_api_key    = "${LOG_INGEST_KEY}"
           image_version  = "$IMAGE_VER"
+          # Short WinRM timeout while diagnosing setup stalls; bump back up once stable.
+          winrm_timeout  = "20m"
           EOF
 
       - name: Packer Format Check
@@ -438,8 +440,8 @@ jobs:
           name: packer-log
           path: packer-debug.log
 
-      - name: Upload VNC Screen Captures on Failure
-        if: failure()
+      - name: Upload VNC Screen Captures
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: vnc-captures
