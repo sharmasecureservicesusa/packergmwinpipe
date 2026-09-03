@@ -278,7 +278,7 @@ jobs:
 
       # Render the answer file from the committed template using the secret.
       - name: Generate Autounattend.xml
-        run: ./scripts/generate-autounattend.sh
+        run: bash ./scripts/generate-autounattend.sh
 
       # Write a non-committed Packer variable file from GitHub secrets.
       # The ISO is the locally cached download from MEGA S4; its checksum is computed
