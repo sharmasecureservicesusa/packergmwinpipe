@@ -51,10 +51,15 @@
             <DiskID>0</DiskID>
             <PartitionID>2</PartitionID>
           </InstallTo>
+          <!-- Select the OS image by index rather than name: less brittle across
+               ISO respins/editions. Index 4 = Windows Server 2025 Datacenter
+               (Desktop Experience) in this ISO's install.wim. Verify with:
+                 dism /Get-WimInfo /WimFile:"<ISO>:\sources\install.wim"
+               or: wimlib-imagex info install.wim -->
           <InstallFrom>
             <MetaData wcm:action="add">
-              <Key>/IMAGE/NAME</Key>
-              <Value>Windows Server 2022 SERVERSTANDARD</Value>
+              <Key>/IMAGE/INDEX</Key>
+              <Value>4</Value>
             </MetaData>
           </InstallFrom>
         </OSImage>
