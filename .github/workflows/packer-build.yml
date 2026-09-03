@@ -45,9 +45,29 @@ permissions:
   contents: read
   id-token: write # Required if using OIDC to authenticate with AWS/Azure/GCP
 
+# ----------------------------------------------------------------------------
+# Global environment: every job and step below inherits these values, so the
+# S4 credentials/config and secrets are available wherever they are needed.
+# ----------------------------------------------------------------------------
 env:
   PACKER_VERSION: "1.14.2"
   PACKER_PLUGIN_PATH: "~/.packer.d/plugins"
+  AWS_DEFAULT_REGION: "us-east-1"
+
+  # MEGA S4 credentials (used for both the ISO source and the image upload).
+  AWS_ACCESS_KEY_ID: ${{ secrets.MEGA_S4_ACCESS_KEY }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.MEGA_S4_SECRET_KEY }}
+  S4_ENDPOINT: ${{ secrets.MEGA_S4_ENDPOINT }}
+  S4_BUCKET: ${{ secrets.MEGA_S4_BUCKET }}
+
+  # Location of the Windows ISO inside MEGA S4.
+  S4_BUCKET_ISO: "installmedia"
+  S4_KEY_ISO: "virtiowiniso/winisowithvirtio/Winserver2025-VirtIO.iso"
+
+  # Build-time secrets.
+  WINRM_PASSWORD: ${{ secrets.WINRM_PASSWORD }}
+  CLOUDFLARE_LOG_INGEST_URL: ${{ secrets.CLOUDFLARE_LOG_INGEST_URL }}
+  CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
 
 jobs:
   # =========================================================================
