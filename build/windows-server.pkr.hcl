@@ -3,11 +3,11 @@ packer {
 
   required_plugins {
     qemu = {
-      version = ">= 1.1.0"
+      version = "~> 1.1"
       source  = "github.com/hashicorp/qemu"
     }
     windows-update = {
-      version = ">= 0.16.0"
+      version = "~> 0.16"
       source  = "github.com/rgl/windows-update"
     }
   }
@@ -17,6 +17,11 @@ variable "image_version" {
   type        = string
   description = "Semantic version of the baked image (e.g., 1.0.0)"
   default     = "1.0.0"
+
+  validation {
+    condition     = can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+$", var.image_version))
+    error_message = "The image version must be a semantic version such as 1.0.0."
+  }
 }
 
 variable "vm_name" {
@@ -39,29 +44,54 @@ variable "cpu_cores" {
   type        = number
   description = "Number of vCPUs allocated during the build"
   default     = 4
+
+  validation {
+    condition     = var.cpu_cores > 0
+    error_message = "The number of CPU cores must be greater than 0."
+  }
 }
 
 variable "memory_mb" {
   type        = number
   description = "RAM allocated in MB during the build"
   default     = 8192
+
+  validation {
+    condition     = var.memory_mb > 0
+    error_message = "The memory size in MB must be greater than 0."
+  }
 }
 
 variable "disk_size" {
   type        = string
   description = "Virtual hard disk size (e.g., 60G)"
   default     = "60G"
+
+  validation {
+    condition     = can(regex("^[0-9]+[GM]$", var.disk_size))
+    error_message = "The disk size must be a value such as '60G' or '512M'."
+  }
 }
 
 variable "winrm_username" {
   type        = string
   description = "Bootstrap local administrator username"
   default     = "Administrator"
+
+  validation {
+    condition     = length(trimspace(var.winrm_username)) > 0
+    error_message = "The WinRM username must not be empty."
+  }
 }
 
+# Build-time only temporary password. It is baked into build/config/Autounattend.xml
+# so the WinRM communicator can connect during the build, then wiped by Sysprep
+# during generalization. Override in CI with `-var winrm_password=...` to avoid
+# sharing a committed secret.
 variable "winrm_password" {
   type        = string
-  description = "Temporary password configured in Autounattend.xml"
+  description = "Temporary build password (must match build/config/Autounattend.xml)"
+  default     = "P@ck3r-Build-Temp!2024"
   sensitive   = true
 }
 
@@ -79,30 +109,43 @@ variable "log_api_key" {
   sensitive   = true
 }
 
+locals {
+  # Shared environment passed to every in-guest PowerShell provisioner.
+  provisioner_env = [
+    "LOG_INGEST_URL=${var.log_ingest_url}",
+    "LOG_API_KEY=${var.log_api_key}",
+    "DEPLOYMENT_ID=packer-${var.vm_name}-${var.image_version}"
+  ]
+}
+
 source "qemu" "windows" {
   vm_name          = "${var.vm_name}-v${var.image_version}.qcow2"
   iso_url          = var.iso_url
   iso_checksum     = var.iso_checksum
   output_directory = "output-${var.vm_name}"
 
-  cpus             = var.cpu_cores
-  memory           = var.memory_mb
-  disk_size        = var.disk_size
-  disk_interface   = "virtio"
-  net_device       = "virtio-net"
-  format           = "qcow2"
-  accelerator      = "kvm"
-  headless         = true
+  cpus           = var.cpu_cores
+  memory         = var.memory_mb
+  disk_size      = var.disk_size
+  disk_interface = "virtio"
+  net_device     = "virtio-net"
+  format         = "qcow2"
+  accelerator    = "kvm"
+  headless       = true
 
-  communicator     = "winrm"
-  winrm_username   = var.winrm_username
-  winrm_password   = var.winrm_password
-  winrm_timeout    = "2h"
-  winrm_use_ssl    = false
-  winrm_insecure   = true
+  communicator   = "winrm"
+  winrm_username = var.winrm_username
+  winrm_password = var.winrm_password
+  winrm_timeout  = "2h"
+  # Cleartext WinRM (no SSL) is acceptable here because the build runs on an
+  # isolated QEMU/KVM virtual network. For shared networks, set winrm_use_ssl = true.
+  winrm_use_ssl  = false
+  winrm_insecure = true
 
+  # Answer file + VirtIO drivers served from the generated CD (CD root).
   cd_files = [
-    "./build/config/Autounattend.xml"
+    "./build/config/Autounattend.xml",
+    "./build/config/virtio"
   ]
 
   qemuargs = [
@@ -114,7 +157,6 @@ source "qemu" "windows" {
 build {
   sources = ["source.qemu.windows"]
 
-
   provisioner "file" {
     source      = "./scripts/modules"
     destination = "C:/Windows/System32/WindowsPowerShell/v1.0/Modules"
@@ -125,19 +167,37 @@ build {
     destination = "C:/Windows/Temp/config"
   }
 
-    provisioner "powershell" {
-    environment_vars = [
-      "LOG_INGEST_URL=${var.log_ingest_url}",
-      "LOG_API_KEY=${var.log_api_key}",
-      "DEPLOYMENT_ID=packer-${var.vm_name}-${var.image_version}"
+  # ---------------------------------------------------------------------------
+  # 1. Patch the base image before layering software (golden-image best practice).
+  # ---------------------------------------------------------------------------
+  provisioner "windows-update" {
+    search_criteria = "IsInstalled=0"
+    filters = [
+      "exclude:$*Preview$*",
+      "include:$*Critical$*",
+      "include:$*Security$*",
+      "include:$*Update$*",
+      "include:$*ServicePack$*",
+      "include:$*Rollups$*",
+      "include:$*Definition$*",
+      "include:$*Tools$*",
+      "include:$*FeaturePacks$*"
     ]
+    restart_timeout = "1h"
+  }
+
+  # ---------------------------------------------------------------------------
+  # 2. Cloudbase-Init single deploy (telemetry bootstrap).
+  # ---------------------------------------------------------------------------
+  provisioner "powershell" {
+    environment_vars = local.provisioner_env
     scripts = [
       "./scripts/cloudbase-single-deploy.ps1"
     ]
   }
 
   # ---------------------------------------------------------------------------
-  # 3. Handle Any Pending Reboot Demanded by Windows Updates / WinGet
+  # 3. Handle any pending reboot demanded by Windows Updates.
   # ---------------------------------------------------------------------------
   provisioner "windows-restart" {
     restart_check_command = "powershell -command \"& {Get-Service -Name winrm}\""
@@ -148,11 +208,7 @@ build {
   # 4. OpenSSH Server Setup (Port 22 & sshd_config Administrator Fix)
   # ---------------------------------------------------------------------------
   provisioner "powershell" {
-    environment_vars = [
-      "LOG_INGEST_URL=${var.log_ingest_url}",
-      "LOG_API_KEY=${var.log_api_key}",
-      "DEPLOYMENT_ID=packer-${var.vm_name}-${var.image_version}"
-    ]
+    environment_vars = local.provisioner_env
     scripts = [
       "./scripts/setup-openssh.ps1"
     ]
@@ -162,11 +218,7 @@ build {
   # 5. Cloudbase-Init Installation & Production Config Injection
   # ---------------------------------------------------------------------------
   provisioner "powershell" {
-    environment_vars = [
-      "LOG_INGEST_URL=${var.log_ingest_url}",
-      "LOG_API_KEY=${var.log_api_key}",
-      "DEPLOYMENT_ID=packer-${var.vm_name}-${var.image_version}"
-    ]
+    environment_vars = local.provisioner_env
     scripts = [
       "./scripts/install-cloudbase-init.ps1",
       "./scripts/configure-cloudbase-init.ps1"
@@ -209,13 +261,9 @@ build {
   # 7. Final Generalization: Pre-Sysprep Flush & Sysprep Execution
   # ---------------------------------------------------------------------------
   provisioner "powershell" {
-    environment_vars = [
-      "LOG_INGEST_URL=${var.log_ingest_url}",
-      "LOG_API_KEY=${var.log_api_key}",
-      "DEPLOYMENT_ID=packer-${var.vm_name}-${var.image_version}"
-    ]
+    environment_vars = local.provisioner_env
     scripts = [
-      "./scripts/sysprep.ps1"
+      "./scripts/sysrep.ps1"
     ]
   }
 }

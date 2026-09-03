@@ -1,0 +1,72 @@
+name: Build Windows Golden Image
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "build/**"
+      - "scripts/**"
+      - ".github/workflows/build.yml"
+
+# The workflow only needs to read the repository.
+permissions:
+  contents: read
+
+# Required GitHub Actions secrets (Settings -> Secrets and variables -> Actions):
+#   ISO_URL                 URL or file path to the Windows Server 2022 ISO
+#   ISO_CHECKSUM            sha256:... checksum of the ISO
+#   WINRM_PASSWORD          temp build password (must be XML-safe: no < or &)
+#   CLOUDFLARE_LOG_INGEST_URL  (optional) Cloudflare Pipelines ingest URL
+#   CLOUDFLARE_API_KEY        (optional) Cloudflare Pipelines API key
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      # Used by the answer-file generator.
+      WINRM_PASSWORD: ${{ secrets.WINRM_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install QEMU / KVM
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 qemu-utils
+          # Ensure the runner can use hardware acceleration.
+          if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; fi
+
+      - name: Setup Packer
+        uses: hashicorp/setup-packer@v3
+        with:
+          version: "1.14.2"
+
+      # Render the answer file from the committed template using the secret.
+      - name: Generate Autounattend.xml
+        run: ./scripts/generate-autounattend.sh
+
+      # Write a non-committed Packer variable file from GitHub secrets.
+      - name: Write Packer variables from GitHub secrets
+        run: |
+          cat > build/ci.pkrvars.hcl <<'EOF'
+          iso_url        = "${{ secrets.ISO_URL }}"
+          iso_checksum   = "${{ secrets.ISO_CHECKSUM }}"
+          winrm_password = "${{ env.WINRM_PASSWORD }}"
+          log_ingest_url = "${{ secrets.CLOUDFLARE_LOG_INGEST_URL }}"
+          log_api_key    = "${{ secrets.CLOUDFLARE_API_KEY }}"
+          EOF
+
+      - name: Packer init
+        run: packer init build/windows-server.pkr.hcl
+
+      - name: Packer build
+        run: packer build -var-file=build/ci.pkrvars.hcl build/windows-server.pkr.hcl
+
+      - name: Upload image artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-server-golden-image
+          path: output-*
+          retention-days: 7

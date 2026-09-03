@@ -1,0 +1,14 @@
+# Packer build artifacts
+output-*/
+*.qcow2
+
+# Generated, secret-backed files (never commit)
+build/ci.pkrvars.hcl
+build/config/Autounattend.xml
+
+# Local overrides
+*.auto.pkrvars.hcl
+
+# OS / editor noise
+.DS_Store
+*.swp
