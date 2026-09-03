@@ -2,111 +2,34 @@
 [CmdletBinding()]
 param (
     [Parameter(Mandatory = $false)]
-    [string]$IngestUrl = $env:LOG_INGEST_URL,
-
-    [Parameter(Mandatory = $false)]
-    [string]$IngestKey = $env:LOG_INGEST_KEY,
-
-    [Parameter(Mandatory = $false)]
-    [string]$DeploymentId = "win-deploy-$(Get-Date -Format 'yyyyMMdd-HHmm')",
-
-    [Parameter(Mandatory = $false)]
     [Security.SecureString]$AdminPassword = (ConvertTo-SecureString "ChangeMeSecurely123!" -AsPlainText -Force)
 )
-class DeploymentLogger {
-    [string]$Endpoint
-    [string]$ApiKey
-    [string]$DeploymentId
-    [string]$Hostname
-    [System.Collections.Generic.List[hashtable]]$Buffer
 
-    DeploymentLogger([string]$endpoint, [string]$apiKey, [string]$deploymentId) {
-        $this.Endpoint     = $endpoint
-        $this.ApiKey       = $apiKey
-        $this.DeploymentId = $deploymentId
-        $this.Hostname     = $env:COMPUTERNAME
-        $this.Buffer       = [System.Collections.Generic.List[hashtable]]::new()
-    }
+$ErrorActionPreference = 'Stop'
 
-    # --- Log Overload 1: 1 argument (defaults to INFO, empty data) ---
-    [void] Log([string]$message) {
-        $this.Log($message, "INFO", @{})
-    }
-
-    # --- Log Overload 2: 2 arguments (defaults to empty data) ---
-    [void] Log([string]$message, [string]$level) {
-        $this.Log($message, $level, @{})
-    }
-
-    # --- Log Overload 3: Full implementation (3 arguments) ---
-    [void] Log([string]$message, [string]$level, [hashtable]$customData) {
-        $timestamp = (Get-Date).ToUniversalTime().ToString("o")
-        Write-Host "[$timestamp] [$level] $message" -ForegroundColor $(
-            switch ($level) {
-                "ERROR"  { [ConsoleColor]::Red }
-                "WARN"   { [ConsoleColor]::Yellow }
-                "NOTICE" { [ConsoleColor]::Cyan }
-                default  { [ConsoleColor]::Gray }
-            }
-        )
-
-        $entry = @{
-            timestamp    = $timestamp
-            deploymentId = $this.DeploymentId
-            hostname     = $this.Hostname
-            level        = $level
-            message      = $message
-            data         = $customData
-        }
-
-        $this.Buffer.Add($entry)
-
-        if ($this.Buffer.Count -ge 25) {
-            $this.Flush()
-        }
-    }
-
-    # --- LogException Overload 1: 1 argument (defaults context message) ---
-    [void] LogException([System.Management.Automation.ErrorRecord]$err) {
-        $this.LogException($err, "An unhandled exception occurred")
-    }
-
-    # --- LogException Overload 2: Full implementation (2 arguments) ---
-    [void] LogException([System.Management.Automation.ErrorRecord]$err, [string]$contextMessage) {
-        $meta = @{
-            ExceptionMessage = $err.Exception.Message
-            InvocationInfo   = $err.InvocationInfo.PositionMessage
-            ScriptStackTrace = $err.ScriptStackTrace
-        }
-        $this.Log("$contextMessage - Error: $($err.Exception.Message)", "ERROR", $meta)
-    }
-
-    # --- Flush buffered events ---
-    [void] Flush() {
-        if ($this.Buffer.Count -eq 0 -or [string]::IsNullOrWhiteSpace($this.Endpoint)) { return }
-
-        $payload = $this.Buffer | ConvertTo-Json -Depth 5 -Compress
-        $headers = @{
-            "Authorization" = "Bearer $($this.ApiKey)"
-            "Content-Type"  = "application/json"
-        }
-
-        try {
-            Invoke-RestMethod -Uri $this.Endpoint `
-                              -Method Post `
-                              -Headers $headers `
-                              -Body $payload `
-                              -TimeoutSec 5 `
-                              -ErrorAction Stop | Out-Null
-            $this.Buffer.Clear()
-        } catch {
-            Write-Warning "Failed to flush logs to remote endpoint: $($_.Exception.Message)"
+# --- Load shared DeploymentLogger module (single source of truth) -----------
+if (-not (Get-Module -Name DeploymentLogger)) {
+    Import-Module DeploymentLogger -Force -ErrorAction SilentlyContinue
+}
+if (-not (Get-Command Get-DeploymentLogger -ErrorAction SilentlyContinue)) {
+    $moduleCandidates = @(
+        (Join-Path $PSScriptRoot 'modules/DeploymentLogger.psm1')
+        (Join-Path $PSScriptRoot '../modules/DeploymentLogger.psm1')
+    )
+    foreach ($candidate in $moduleCandidates) {
+        if (Test-Path $candidate) {
+            Import-Module $candidate -Force -ErrorAction SilentlyContinue
+            if (Get-Command Get-DeploymentLogger -ErrorAction SilentlyContinue) { break }
         }
     }
 }
+if (-not (Get-Command Get-DeploymentLogger -ErrorAction SilentlyContinue)) {
+    throw 'DeploymentLogger module not found. Ensure the Packer file provisioner copied scripts/modules/DeploymentLogger.psm1 into the guest PowerShell module path.'
+}
 
-
-$logger = [DeploymentLogger]::new($IngestUrl, $IngestKey, $DeploymentId)
+# Get-DeploymentLogger reads LOG_INGEST_URL / LOG_API_KEY / DEPLOYMENT_ID from the
+# environment, which the Packer provisioner_env block injects during the build.
+$Logger = Get-DeploymentLogger
 
 function New-LocalAdminUser {
     [CmdletBinding()]
@@ -133,7 +56,7 @@ function New-LocalAdminUser {
                 Add-LocalGroupMember -Group "Administrators" -Member $Username -ErrorAction Stop
                 $Logger.Log("Added '$Username' to Administrators group.", "INFO")
             } else {
-                $logger.Log("User '$Username' already exists. Skipping creation.", "INFO")
+                $Logger.Log("User '$Username' already exists. Skipping creation.", "INFO")
             }
         } catch {
             $Logger.LogException($_, "Failed to provision user '$Username'")
@@ -238,9 +161,9 @@ $ProductType = [int]$OS.ProductType
 $IsServer    = ($ProductType -ne 1)
 $IsClient    = ($ProductType -eq 1)
 
-$logger.Log("Provisioning initiated on $($OS.Caption) (Build $BuildNumber)", "INFO")
+$Logger.Log("Provisioning initiated on $($OS.Caption) (Build $BuildNumber)", "INFO")
 powercfg /setactive SCHEME_MIN 2>$null
-Configure-RemoteDesktop -Logger $logger
+Configure-RemoteDesktop -Logger $Logger
 $commonApps = @(
     "7zip.7zip",
     "Devolutions.UniGetUI",
@@ -268,10 +191,6 @@ $commonApps = @(
     "Amazon.AWSCLI",
     "Google.Chrome",
     "Mozilla.Firefox",
-    "Kubernetes.kubectl",
-    "HashiCorp.Terraform",
-    "Microsoft.AzureCLI",
-    "Amazon.AWSCLI",
     "Rclone.Rclone",
     "Bdrive.RcloneView",
     "HashiCorp.Vagrant",
@@ -282,16 +201,16 @@ $commonApps = @(
     "Microsoft.Azure.Az"
 )
 
-Install-WingetPackages -Packages $commonApps -Logger $logger
+Install-WingetPackages -Packages $commonApps -Logger $Logger
 try {
     wsl --install --no-distribution
-    $logger.Log("WSL base component enabled.", "INFO")
+    $Logger.Log("WSL base component enabled.", "INFO")
 } catch {
-    $logger.LogException($_, "WSL installation failed")
+    $Logger.LogException($_, "WSL installation failed")
 }
 
 if ($IsServer) {
-    $logger.Log("Executing Server provisioning tasks...", "INFO")
+    $Logger.Log("Executing Server provisioning tasks...", "INFO")
     Install-WindowsFeature -Name Web-Server, Web-App-Dev -IncludeManagementTools -ErrorAction SilentlyContinue
     Install-WindowsFeature -Name RSAT-Feature-Tools-BitLocker -ErrorAction SilentlyContinue
     Get-ScheduledTask -TaskName "ServerManager" -ErrorAction SilentlyContinue | Disable-ScheduledTask
@@ -301,11 +220,11 @@ if ($IsServer) {
             "launchpadUser" = "sharmasecureusa"
             "githubUser"    = "adminsharmasecureservicescausa"
         }
-        Configure-OpenSSH -KeySources $sshKeys -Logger $logger
+        Configure-OpenSSH -KeySources $sshKeys -Logger $Logger
     }
 
 } elseif ($IsClient) {
-    $logger.Log("Executing Client/Workstation provisioning tasks...", "INFO")
+    $Logger.Log("Executing Client/Workstation provisioning tasks...", "INFO")
 
     # Target specific optional developer features instead of a blanket enablement
     $clientFeatures = @("Microsoft-Windows-Subsystem-Linux", "VirtualMachinePlatform")
@@ -361,8 +280,8 @@ if ($IsServer) {
     "Google.GoogleDrive",
     "Python.PythonInstallManager"
     )
-    Install-WingetPackages -Packages $clientApps -Logger $logger
+    Install-WingetPackages -Packages $clientApps -Logger $Logger
 }
 
-$logger.Log("Deployment script finished successfully.", "NOTICE")
-$logger.Flush()
+$Logger.Log("Deployment script finished successfully.", "NOTICE")
+$Logger.Flush()

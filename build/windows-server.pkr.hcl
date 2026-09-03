@@ -33,11 +33,21 @@ variable "vm_name" {
 variable "iso_url" {
   type        = string
   description = "Source URL or local path to the Windows Server ISO"
+
+  validation {
+    condition     = can(regex("^(https?://|file://|\\\\|/|[a-zA-Z]:\\\\).+", var.iso_url))
+    error_message = "The iso_url must be an http(s)://, file://, or local filesystem path."
+  }
 }
 
 variable "iso_checksum" {
   type        = string
   description = "Cryptographic checksum for the ISO (e.g., sha256:...)"
+
+  validation {
+    condition     = can(regex("^[a-zA-Z0-9]+:[a-fA-F0-9]+$", var.iso_checksum))
+    error_message = "The iso_checksum must be in the form '<type>:<hash>' (e.g., sha256:...)."
+  }
 }
 
 variable "cpu_cores" {
@@ -158,8 +168,8 @@ build {
   sources = ["source.qemu.windows"]
 
   provisioner "file" {
-    source      = "./scripts/modules"
-    destination = "C:/Windows/System32/WindowsPowerShell/v1.0/Modules"
+    source      = "./scripts/modules/DeploymentLogger.psm1"
+    destination = "C:/Windows/System32/WindowsPowerShell/v1.0/Modules/DeploymentLogger.psm1"
   }
 
   provisioner "file" {

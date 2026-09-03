@@ -1,18 +1,30 @@
 # scripts/setup-openssh.ps1
 [CmdletBinding()]
-param(
-    [DeploymentLogger]$Logger
-)
+param()
 
 $ErrorActionPreference = 'Stop'
 
-# Auto-initialize logger if not passed as parameter
-if (-not $Logger) {
-    Import-Module "$PSScriptRoot/modules/DeploymentLogger.psm1" -Force -ErrorAction SilentlyContinue
-    if (Get-Command Get-DeploymentLogger -ErrorAction SilentlyContinue) {
-        $Logger = Get-DeploymentLogger
+# --- Load shared DeploymentLogger module (single source of truth) -----------
+if (-not (Get-Module -Name DeploymentLogger)) {
+    Import-Module DeploymentLogger -Force -ErrorAction SilentlyContinue
+}
+if (-not (Get-Command Get-DeploymentLogger -ErrorAction SilentlyContinue)) {
+    $moduleCandidates = @(
+        (Join-Path $PSScriptRoot 'modules/DeploymentLogger.psm1')
+        (Join-Path $PSScriptRoot '../modules/DeploymentLogger.psm1')
+    )
+    foreach ($candidate in $moduleCandidates) {
+        if (Test-Path $candidate) {
+            Import-Module $candidate -Force -ErrorAction SilentlyContinue
+            if (Get-Command Get-DeploymentLogger -ErrorAction SilentlyContinue) { break }
+        }
     }
 }
+if (-not (Get-Command Get-DeploymentLogger -ErrorAction SilentlyContinue)) {
+    throw 'DeploymentLogger module not found. Ensure the Packer file provisioner copied scripts/modules/DeploymentLogger.psm1 into the guest PowerShell module path.'
+}
+
+$Logger = Get-DeploymentLogger
 
 try {
     $Logger.Log("Starting OpenSSH Server installation...", "INFO")
@@ -28,6 +40,5 @@ try {
     $Logger.LogException($_, "Failed to configure OpenSSH")
     throw $_
 } finally {
-    # Ensure remaining logs are dispatched to Cloudflare before process exit
     if ($Logger) { $Logger.Flush() }
 }

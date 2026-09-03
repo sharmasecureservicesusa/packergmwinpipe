@@ -6,6 +6,8 @@
     remote telemetry flushing, and WinGet unattended invocation compliance.
 #>
 
+using module "../scripts/modules/DeploymentLogger.psm1"
+
 BeforeAll {
     $Script:DeployScriptPath = (Resolve-Path "$PSScriptRoot/../scripts/cloudbase-single-deploy.ps1").Path
 

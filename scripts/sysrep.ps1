@@ -12,25 +12,32 @@
 [CmdletBinding()]
 param(
     [ValidateSet('quit', 'shutdown', 'reboot')]
-    [string]$Action = 'quit',
-
-    [DeploymentLogger]$Logger
+    [string]$Action = 'quit'
 )
 
 $ErrorActionPreference = 'Stop'
 
-# -------------------------------------------------------------------------
-# 1. Logger Initialization & Module Loading
-# -------------------------------------------------------------------------
-if (-not $Logger) {
-    $modulePath = Join-Path $PSScriptRoot "modules\DeploymentLogger.psm1"
-    if (Test-Path $modulePath) {
-        Import-Module $modulePath -Force -ErrorAction SilentlyContinue
-        if (Get-Command Get-DeploymentLogger -ErrorAction SilentlyContinue) {
-            $Logger = Get-DeploymentLogger
+# --- Load shared DeploymentLogger module (single source of truth) -----------
+if (-not (Get-Module -Name DeploymentLogger)) {
+    Import-Module DeploymentLogger -Force -ErrorAction SilentlyContinue
+}
+if (-not (Get-Command Get-DeploymentLogger -ErrorAction SilentlyContinue)) {
+    $moduleCandidates = @(
+        (Join-Path $PSScriptRoot 'modules/DeploymentLogger.psm1')
+        (Join-Path $PSScriptRoot '../modules/DeploymentLogger.psm1')
+    )
+    foreach ($candidate in $moduleCandidates) {
+        if (Test-Path $candidate) {
+            Import-Module $candidate -Force -ErrorAction SilentlyContinue
+            if (Get-Command Get-DeploymentLogger -ErrorAction SilentlyContinue) { break }
         }
     }
 }
+if (-not (Get-Command Get-DeploymentLogger -ErrorAction SilentlyContinue)) {
+    throw 'DeploymentLogger module not found. Ensure the Packer file provisioner copied scripts/modules/DeploymentLogger.psm1 into the guest PowerShell module path.'
+}
+
+$Logger = Get-DeploymentLogger
 
 function Write-DeployLog([string]$msg, [string]$lvl = "INFO", [hashtable]$meta = @{}) {
     if ($Logger) {
@@ -95,11 +102,9 @@ try {
         Timestamp   = (Get-Date).ToUniversalTime().ToString("o")
     }
 
-    if ($Logger) {
-        # Flush the buffer now while outbound TCP/DNS is still alive
-        Write-Host "Flushing telemetry events to Cloudflare Pipelines before network shutdown..." -ForegroundColor Cyan
-        $Logger.Flush()
-    }
+    # Flush the buffer now while outbound TCP/DNS is still alive
+    $Logger.Log("Flushing telemetry events to Cloudflare Pipelines before network shutdown...", "NOTICE")
+    $Logger.Flush()
 
     # -------------------------------------------------------------------------
     # 6. Execute Sysprep
@@ -112,7 +117,7 @@ try {
         "/unattend:`"$unattendXml`""
     )
 
-    Write-Host "Invoking Sysprep with parameters: $($sysprepArgs -join ' ')" -ForegroundColor Yellow
+    $Logger.Log("Invoking Sysprep with parameters: $($sysprepArgs -join ' ')", "WARN")
 
     $proc = Start-Process -FilePath $sysprepExe `
                           -ArgumentList $sysprepArgs `
@@ -124,21 +129,21 @@ try {
         throw "Sysprep failed with exit code $($proc.ExitCode)"
     }
 
-    Write-Host "Sysprep completed successfully with exit code 0." -ForegroundColor Green
+    $Logger.Log("Sysprep completed successfully with exit code 0.", "NOTICE")
 
 } catch {
     $errMsg = $_.Exception.Message
-    Write-Host "CRITICAL ERROR in sysprep.ps1: $errMsg" -ForegroundColor Red
+    $Logger.Log("CRITICAL ERROR in sysprep.ps1: $errMsg", "ERROR")
 
-    if ($Logger) {
-        # Best-effort error report before halting
-        try {
-            $Logger.LogException($_, "Fatal failure during Sysprep execution")
-            $Logger.Flush()
-        } catch {
-            # Network may already be disconnected
-        }
+    # Best-effort error report before halting
+    try {
+        $Logger.LogException($_, "Fatal failure during Sysprep execution")
+        $Logger.Flush()
+    } catch {
+        # Network may already be disconnected
     }
 
     throw $_
+} finally {
+    if ($Logger) { $Logger.Flush() }
 }

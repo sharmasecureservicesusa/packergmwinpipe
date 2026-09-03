@@ -19,12 +19,15 @@ permissions:
 #   WINRM_PASSWORD          temp build password (must be XML-safe: no < or &)
 #   CLOUDFLARE_LOG_INGEST_URL  (optional) Cloudflare Pipelines ingest URL
 #   CLOUDFLARE_API_KEY        (optional) Cloudflare Pipelines API key
+#
+# The writable Packer variable file (build/ci.pkrvars.hcl) is generated at runtime
+# from these secrets (and gitignored). No secret material is ever committed.
 
 jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      # Used by the answer-file generator.
+      # Consumed by scripts/generate-autounattend.sh to render the answer file.
       WINRM_PASSWORD: ${{ secrets.WINRM_PASSWORD }}
     steps:
       - name: Checkout
@@ -52,7 +55,7 @@ jobs:
           cat > build/ci.pkrvars.hcl <<'EOF'
           iso_url        = "${{ secrets.ISO_URL }}"
           iso_checksum   = "${{ secrets.ISO_CHECKSUM }}"
-          winrm_password = "${{ env.WINRM_PASSWORD }}"
+          winrm_password = "${{ secrets.WINRM_PASSWORD }}"
           log_ingest_url = "${{ secrets.CLOUDFLARE_LOG_INGEST_URL }}"
           log_api_key    = "${{ secrets.CLOUDFLARE_API_KEY }}"
           EOF

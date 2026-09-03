@@ -60,6 +60,10 @@ jobs:
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || inputs.force_build == true
     runs-on: ubuntu-latest
 
+    env:
+      PACKER_LOG: 1
+      PACKER_LOG_PATH: "packer-debug.log"
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -84,42 +88,40 @@ jobs:
       - name: Packer Init
         run: packer init build/
 
+      # Write a non-committed Packer variable file from GitHub secrets.
+      - name: Write Packer variables from GitHub secrets
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            IMAGE_VER="${GITHUB_REF_NAME#v}"
+          else
+            IMAGE_VER="1.0.${{ github.run_number }}"
+          fi
+          cat > build/ci.pkrvars.hcl <<'EOF'
+          iso_url        = "${{ secrets.ISO_URL }}"
+          iso_checksum   = "${{ secrets.ISO_CHECKSUM }}"
+          winrm_password = "${{ secrets.WINRM_PASSWORD }}"
+          log_ingest_url = "${{ secrets.CLOUDFLARE_LOG_INGEST_URL }}"
+          log_api_key    = "${{ secrets.CLOUDFLARE_API_KEY }}"
+          image_version  = "$IMAGE_VER"
+          EOF
+
       # 2. Syntax & HCL format check
       - name: Packer Format Check
         run: packer fmt -check build/
 
       # 3. Validate template & variables
       - name: Packer Validate
-        run: packer validate -var-file="build/variables.pkrvars.hcl" build/
-
-      # Calculate image tag based on Git reference
-      - name: Set Version Variable
-        id: vars
-        run: |
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            echo "IMAGE_VER=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
-          else
-            echo "IMAGE_VER=1.0.${{ github.run_number }}" >> $GITHUB_ENV
-          fi
+        run: packer validate -var-file="build/ci.pkrvars.hcl" build/
 
       # 4. Production Build with Recommended Runner Flags
       - name: Packer Build
-        env:
-          # Pass sensitive values securely via PKR_VAR_ environment variables
-          PKR_VAR_winrm_password: ${{ secrets.WINRM_PASSWORD }}
-          PKR_VAR_log_ingest_url: ${{ secrets.LOG_INGEST_URL }}
-          PKR_VAR_log_api_key: ${{ secrets.LOG_API_KEY }}
-          # (Optional) Enable verbose Packer engine logs if needed
-          PACKER_LOG: 1
-          PACKER_LOG_PATH: "packer-debug.log"
-          PKR_VAR_image_version: ${{ env.IMAGE_VER }}
         run: |
           packer build \
             -force \
             -on-error=abort \
             -color=false \
             -timestamp-ui \
-            -var-file="build/variables.pkrvars.hcl" \
+            -var-file="build/ci.pkrvars.hcl" \
             build/
 
       - name: Upload Debug Log on Failure
@@ -139,7 +141,7 @@ jobs:
 
           echo "Compressing raw build output..."
           qemu-img convert -O qcow2 -c \
-            output-windows-server/*.qcow2 \
+            output-windows-server-2022-golden/*.qcow2 \
             dist/windows-server-2022-golden-${IMAGE_TAG}.qcow2
 
           echo "Generating SHA-256 checksum..."
