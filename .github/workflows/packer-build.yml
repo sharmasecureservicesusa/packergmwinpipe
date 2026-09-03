@@ -118,12 +118,6 @@ jobs:
       - name: Resolve ISO version from MEGA S4
         id: iso
         if: github.event_name != 'pull_request'
-        env:
-          S4_BUCKET_ISO: "installmedia"
-          S4_KEY_ISO: "virtiowiniso/winisowithvirtio/Winserver2025-VirtIO.iso"
-          AWS_ACCESS_KEY_ID: ${{ secrets.MEGA_S4_ACCESS_KEY }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.MEGA_S4_SECRET_KEY }}
-          S4_ENDPOINT: "https://s3.ca-vancouver-1.megas4.com"
         run: |
           set -euo pipefail
           if ! ETAG=$(aws s3api head-object \
@@ -151,19 +145,14 @@ jobs:
 
       - name: Download Windows ISO from MEGA S4
         if: github.event_name != 'pull_request' && steps.cache-iso.outputs.cache-hit != 'true'
-        env:
-          S4_BUCKET_ISO: "installmedia"
-          S4_KEY_ISO: "virtiowiniso/winisowithvirtio/Winserver2025-VirtIO.iso"
-          AWS_ACCESS_KEY_ID: ${{ secrets.MEGA_S4_ACCESS_KEY }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.MEGA_S4_SECRET_KEY }}
-          S4_ENDPOINT: "https://s3.ca-vancouver-1.megas4.com"
         run: |
           mkdir -p iso
           aws s3 cp \
-            "s3://installmedia/virtiowiniso/winisowithvirtio/Winserver2025-VirtIO.iso" \
+            "s3://${S4_BUCKET_ISO}/${S4_KEY_ISO}" \
             "iso/Winserver2025-VirtIO.iso" \
             --endpoint-url "$S4_ENDPOINT" \
             --no-progress
+
       - name: Cache Packer Plugins
         uses: actions/cache@v4
         with:
@@ -191,24 +180,12 @@ jobs:
     env:
       PACKER_LOG: 1
       PACKER_LOG_PATH: "packer-debug.log"
-      S4_BUCKET_ISO: "installmedia"
-      S4_KEY_ISO: "virtiowiniso/winisowithvirtio/Winserver2025-VirtIO.iso"
-      AWS_ACCESS_KEY_ID: ${{ secrets.MEGA_S4_ACCESS_KEY }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.MEGA_S4_SECRET_KEY }}
-      S4_ENDPOINT: "https://s3.ca-vancouver-1.megas4.com"
-      WINRM_PASSWORD: ${{ secrets.WINRM_PASSWORD }}
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Install QEMU / KVM
-        env:
-          S4_BUCKET_ISO: "installmedia"
-          S4_KEY_ISO: "virtiowiniso/winisowithvirtio/Winserver2025-VirtIO.iso"
-          AWS_ACCESS_KEY_ID: ${{ secrets.MEGA_S4_ACCESS_KEY }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.MEGA_S4_SECRET_KEY }}
-          S4_ENDPOINT: "https://s3.ca-vancouver-1.megas4.com"
         run: |
           sudo apt-get update
           sudo apt-get install -y qemu-system-x86 qemu-utils
@@ -227,12 +204,6 @@ jobs:
           version: ${{ env.PACKER_VERSION }}
 
       - name: Restore Cached Plugins
-        env:
-          S4_BUCKET_ISO: "installmedia"
-          S4_KEY_ISO: "virtiowiniso/winisowithvirtio/Winserver2025-VirtIO.iso"
-          AWS_ACCESS_KEY_ID: ${{ secrets.MEGA_S4_ACCESS_KEY }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.MEGA_S4_SECRET_KEY }}
-          S4_ENDPOINT: "https://s3.ca-vancouver-1.megas4.com"
         uses: actions/cache@v4
         with:
           path: ${{ env.PACKER_PLUGIN_PATH }}
@@ -271,12 +242,6 @@ jobs:
       # Actions cache and forces a fresh download on the next run.
       - name: Resolve ISO version from MEGA S4
         id: iso
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.MEGA_S4_ACCESS_KEY }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.MEGA_S4_SECRET_KEY }}
-          S4_ENDPOINT: "https://s3.ca-vancouver-1.megas4.com"
-          S4_BUCKET_ISO: "installmedia"
-          S4_KEY_ISO: "virtiowiniso/winisowithvirtio/Winserver2025-VirtIO.iso"
         run: |
           set -euo pipefail
           if ! ETAG=$(aws s3api head-object \
@@ -303,16 +268,10 @@ jobs:
 
       - name: Download Windows ISO from MEGA S4
         if: steps.cache-iso.outputs.cache-hit != 'true'
-        env:
-          S4_BUCKET_ISO: "installmedia"
-          S4_KEY_ISO: "virtiowiniso/winisowithvirtio/Winserver2025-VirtIO.iso"
-          AWS_ACCESS_KEY_ID: ${{ secrets.MEGA_S4_ACCESS_KEY }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.MEGA_S4_SECRET_KEY }}
-          S4_ENDPOINT: "https://s3.ca-vancouver-1.megas4.com"
         run: |
           mkdir -p iso
           aws s3 cp \
-            "s3://installmedia/virtiowiniso/winisowithvirtio/Winserver2025-VirtIO.iso" \
+            "s3://${S4_BUCKET_ISO}/${S4_KEY_ISO}" \
             "iso/Winserver2025-VirtIO.iso" \
             --endpoint-url "$S4_ENDPOINT" \
             --no-progress
@@ -325,12 +284,6 @@ jobs:
       # The ISO is the locally cached download from MEGA S4; its checksum is computed
       # from the actual file so Packer can verify integrity on every run.
       - name: Write Packer variables from GitHub secrets
-        env:
-          S4_BUCKET_ISO: "installmedia"
-          S4_KEY_ISO: "virtiowiniso/winisowithvirtio/Winserver2025-VirtIO.iso"
-          AWS_ACCESS_KEY_ID: ${{ secrets.MEGA_S4_ACCESS_KEY }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.MEGA_S4_SECRET_KEY }}
-          S4_ENDPOINT: "https://s3.ca-vancouver-1.megas4.com"
         run: |
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             IMAGE_VER="${GITHUB_REF_NAME#v}"
@@ -344,9 +297,9 @@ jobs:
           cat > build/ci.pkrvars.hcl <<EOF
           iso_url        = "$ISO_PATH"
           iso_checksum   = "sha256:${ISO_SHA256}"
-          winrm_password = "${{ secrets.WINRM_PASSWORD }}"
-          log_ingest_url = "${{ secrets.CLOUDFLARE_LOG_INGEST_URL }}"
-          log_api_key    = "${{ secrets.CLOUDFLARE_API_KEY }}"
+          winrm_password = "${WINRM_PASSWORD}"
+          log_ingest_url = "${CLOUDFLARE_LOG_INGEST_URL}"
+          log_api_key    = "${CLOUDFLARE_API_KEY}"
           image_version  = "$IMAGE_VER"
           EOF
 
@@ -357,12 +310,6 @@ jobs:
         run: packer validate -var-file="build/ci.pkrvars.hcl" build/
 
       - name: Packer Build
-        env:
-          S4_BUCKET_ISO: "installmedia"
-          S4_KEY_ISO: "virtiowiniso/winisowithvirtio/Winserver2025-VirtIO.iso"
-          AWS_ACCESS_KEY_ID: ${{ secrets.MEGA_S4_ACCESS_KEY }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.MEGA_S4_SECRET_KEY }}
-          S4_ENDPOINT: "https://s3.ca-vancouver-1.megas4.com"
         run: |
           packer build \
             -force \
@@ -406,12 +353,6 @@ jobs:
           cd ..
 
       - name: Upload Artifacts to MEGA S4
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.MEGA_S4_ACCESS_KEY }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.MEGA_S4_SECRET_KEY }}
-          AWS_DEFAULT_REGION: "us-east-1"
-          S4_ENDPOINT: ${{ secrets.MEGA_S4_ENDPOINT }}
-          S4_BUCKET: ${{ secrets.MEGA_S4_BUCKET }}
         run: |
           # 1. Optimize AWS CLI for high-bandwidth, large-file multipart uploads
           aws configure set default.s3.multipart_threshold 64MB
