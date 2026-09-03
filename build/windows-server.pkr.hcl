@@ -160,7 +160,8 @@ source "qemu" "windows" {
 
   # Answer file served from the generated CD (CD root).
   cd_files = [
-    "./build/config/Autounattend.xml"
+     "./build/config/Autounattend.xml",
+     "./build/config/virtio"
   ]
 
   # VirtIO storage/network drivers served from a floppy, which Windows Setup mounts
