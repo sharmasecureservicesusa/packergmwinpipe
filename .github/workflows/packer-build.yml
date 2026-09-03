@@ -35,7 +35,7 @@ env:
 jobs:
   changes:
     name: Detect Build Changes
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 10
     outputs:
       build_required: ${{ steps.detect.outputs.build_required }}
@@ -66,7 +66,7 @@ jobs:
 
   validate:
     name: Validate Packer
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - name: Check Out Repository
@@ -137,7 +137,7 @@ jobs:
     name: Build and Publish Image
     needs: [changes, validate, test]
     if: needs.changes.outputs.build_required == 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: 360
     env:
       AWS_DEFAULT_REGION: us-east-1
