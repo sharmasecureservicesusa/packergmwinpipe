@@ -61,10 +61,12 @@ jobs:
 
       # 4. Publish test report and summary directly into GitHub Actions UI
       - name: Publish Test Results
-        uses: EnricoMi/publish-unit-test-result-action@v2
+        uses: dorny/test-reporter@v2
         if: always()
         with:
-          nunit_files: './test-results.xml'
+          name: Pester Test Results
+          path: './test-results.xml'
+          reporter: dotnet-nunit
 
   # =========================================================================
   # JOB 2: Publish Release (ONLY runs if tests pass AND on a git tag)
