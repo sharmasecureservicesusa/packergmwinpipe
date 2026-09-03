@@ -161,6 +161,7 @@ $ProductType = [int]$OS.ProductType
 $IsServer    = ($ProductType -ne 1)
 $IsClient    = ($ProductType -eq 1)
 
+try {
 $Logger.Log("Provisioning initiated on $($OS.Caption) (Build $BuildNumber)", "INFO")
 powercfg /setactive SCHEME_MIN 2>$null
 Configure-RemoteDesktop -Logger $Logger
@@ -284,4 +285,7 @@ if ($IsServer) {
 }
 
 $Logger.Log("Deployment script finished successfully.", "NOTICE")
-$Logger.Flush()
+} finally {
+    # Ensure buffered telemetry is shipped even if the script fails mid-way.
+    if ($Logger) { $Logger.Flush() }
+}

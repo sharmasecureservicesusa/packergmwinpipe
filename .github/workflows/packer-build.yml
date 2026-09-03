@@ -32,7 +32,7 @@ on:
 #   MEGA_S4_ENDPOINT           MEGA S4 endpoint URL (ISO source + image upload)
 #   MEGA_S4_BUCKET             MEGA S4 bucket for built image uploads
 #   CLOUDFLARE_LOG_INGEST_URL  Cloudflare Pipelines ingest URL
-#   CLOUDFLARE_API_KEY         Cloudflare Pipelines API key
+#   LOG_INGEST_KEY             Cloudflare Pipelines auth key (Bearer token)
 #
 # The Windows ISO is downloaded from MEGA S4 (S4_BUCKET_ISO/S4_KEY_ISO below) at build
 # time and cached in GitHub Actions, keyed by the object's S3 ETag. When the ISO in S4
@@ -67,7 +67,7 @@ env:
   # Build-time secrets.
   WINRM_PASSWORD: ${{ secrets.WINRM_PASSWORD }}
   CLOUDFLARE_LOG_INGEST_URL: ${{ secrets.CLOUDFLARE_LOG_INGEST_URL }}
-  CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
+  LOG_INGEST_KEY: ${{ secrets.LOG_INGEST_KEY }}
 
 jobs:
   # =========================================================================
@@ -96,7 +96,7 @@ jobs:
           missing=0
           for var in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY S4_ENDPOINT S4_BUCKET \
                      S4_BUCKET_ISO S4_KEY_ISO WINRM_PASSWORD \
-                     CLOUDFLARE_LOG_INGEST_URL CLOUDFLARE_API_KEY; do
+                     CLOUDFLARE_LOG_INGEST_URL LOG_INGEST_KEY; do
             if [ -z "${!var:-}" ]; then
               echo "::error::Missing required value: $var"
               missing=1
@@ -221,7 +221,7 @@ jobs:
           missing=0
           for var in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY S4_ENDPOINT S4_BUCKET \
                      S4_BUCKET_ISO S4_KEY_ISO WINRM_PASSWORD \
-                     CLOUDFLARE_LOG_INGEST_URL CLOUDFLARE_API_KEY; do
+                     CLOUDFLARE_LOG_INGEST_URL LOG_INGEST_KEY; do
             if [ -z "${!var:-}" ]; then
               echo "::error::Missing required value: $var"
               missing=1
@@ -278,6 +278,99 @@ jobs:
             --endpoint-url "$S4_ENDPOINT" \
             --no-progress
 
+      # --- VirtIO drivers: download upstream ISO, extract, and cache ---
+      # The Packer template reads drivers from ./build/config/virtio via floppy_dirs.
+      # We cache the extracted drivers (keyed by the upstream ISO version) and sync
+      # them into build/config/virtio before the build so updates are picked up.
+      - name: Resolve VirtIO upstream version
+        id: virtio
+        run: |
+          # The stable-virtio directory listing exposes the versioned ISO name.
+          VER=$(curl -fsSL https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/ \
+                | grep -oE 'virtio-win-[0-9]+\.[0-9]+\.[0-9]+-[0-9]+' \
+                | sort -uV | tail -n1)
+          if [ -z "$VER" ]; then
+            echo "::warning::Could not resolve VirtIO version; falling back to 'stable' cache key."
+            VER="stable"
+          fi
+          echo "Resolved VirtIO version: $VER"
+          echo "virtio_ver=$VER" >> "$GITHUB_OUTPUT"
+
+      - name: Cache VirtIO drivers
+        id: cache-virtio
+        uses: actions/cache@v4
+        with:
+          path: virtio-drivers
+          key: virtio-${{ steps.virtio.outputs.virtio_ver }}
+
+      - name: Download and extract VirtIO drivers
+        if: steps.cache-virtio.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p virtio-drivers
+          echo "Downloading VirtIO ISO (${{ steps.virtio.outputs.virtio_ver }})..."
+          curl -fsSL https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso \
+            -o /tmp/virtio-win.iso
+          echo "Extracting drivers..."
+          xorriso -osirrox on -indev /tmp/virtio-win.iso -extract / virtio-drivers/
+          rm -f /tmp/virtio-win.iso
+
+      - name: Stage VirtIO drivers for Packer
+        run: |
+          set -euo pipefail
+          # The answer file references A:\virtio. Populate build/config/virtio with
+          # the newest amd64 drivers from the extracted ISO, but ONLY overwrite a
+          # committed driver when the upstream version is newer.
+          mkdir -p build/config/virtio
+
+          # Extract a comparable version from a driver .inf (DriverVer=MM/DD/YYYY,ver).
+          inf_ver() {
+            # $1 = driver dir; prints "version date" or empty if none found.
+            local inf
+            inf=$(ls "$1"/*.inf 2>/dev/null | head -n1 || true)
+            [ -n "$inf" ] || { echo ""; return; }
+            grep -m1 -oE 'DriverVer *= *[0-9]{2}/[0-9]{2}/[0-9]{4},[0-9.]+' "$inf" \
+              | sed -E 's/.*,([0-9.]+)/\1/' || true
+          }
+
+          for drv in NetKVM vioscsi viostor viorng; do
+            src=$(find "virtio-drivers/$drv" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort -V | tail -n1 || true)
+            [ -n "$src" ] || { echo "::warning::No upstream dir for $drv; keeping committed copy."; continue; }
+
+            dst="build/config/virtio/$drv"
+            up_ver=$(inf_ver "$src")
+            cur_ver=$(inf_ver "$dst")
+
+            # Warn when a version can't be determined so it surfaces in the Actions UI
+            # instead of silently falling back to the committed copy.
+            if [ -z "$up_ver" ]; then
+              echo "::warning::$drv: could not parse upstream DriverVer; cannot compare versions."
+            fi
+            if [ -n "$src" ] && [ -z "$cur_ver" ] && [ -d "$dst" ]; then
+              echo "::warning::$drv: committed driver has no parseable DriverVer; treating upstream as newer."
+            fi
+
+            # Decide: overwrite if no committed version, or upstream sorts newer.
+            if [ -z "$cur_ver" ]; then
+              newer=yes
+            elif [ -n "$up_ver" ] && [ "$(printf '%s\n%s\n' "$cur_ver" "$up_ver" | sort -V | tail -n1)" = "$up_ver" ] && [ "$up_ver" != "$cur_ver" ]; then
+              newer=yes
+            else
+              newer=no
+            fi
+
+            if [ "$newer" = yes ]; then
+              echo "$drv: upstream ${up_ver:-unknown} > committed ${cur_ver:-none} -> updating"
+              mkdir -p "$dst"
+              cp -f "$src"/*.sys "$src"/*.inf "$src"/*.cat "$dst/" 2>/dev/null || true
+            else
+              echo "$drv: committed ${cur_ver:-unknown} is current (upstream ${up_ver:-unknown}) -> keeping"
+            fi
+          done
+
+          echo "Staged VirtIO drivers:"
+          ls -R build/config/virtio
+
       # Render the answer file from the committed template using the secret.
       - name: Generate Autounattend.xml
         run: bash ./scripts/generate-autounattend.sh
@@ -301,7 +394,7 @@ jobs:
           iso_checksum   = "sha256:${ISO_SHA256}"
           winrm_password = "${WINRM_PASSWORD}"
           log_ingest_url = "${CLOUDFLARE_LOG_INGEST_URL}"
-          log_api_key    = "${CLOUDFLARE_API_KEY}"
+          log_api_key    = "${LOG_INGEST_KEY}"
           image_version  = "$IMAGE_VER"
           EOF
 
