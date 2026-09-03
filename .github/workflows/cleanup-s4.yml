@@ -1,0 +1,54 @@
+name: MEGA S4 Storage Retention Cleanup
+
+on:
+  schedule:
+    - cron: '0 2 * * 0'
+  workflow_dispatch:
+
+jobs:
+  prune-old-images:
+    name: Prune Expired Images & Stale Uploads
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install Rclone
+        run: |
+          sudo apt-get update && sudo apt-get install -y rclone
+
+      - name: Configure Rclone for MEGA S4
+        env:
+          S4_ACCESS_KEY: ${{ secrets.MEGA_S4_ACCESS_KEY }}
+          S4_SECRET_KEY: ${{ secrets.MEGA_S4_SECRET_KEY }}
+          S4_ENDPOINT: ${{ secrets.MEGA_S4_ENDPOINT }}
+        run: |
+          mkdir -p ~/.config/rclone
+          cat <<EOF > ~/.config/rclone/rclone.conf
+          [megas4]
+          type = s3
+          provider = Other
+          env_auth = false
+          access_key_id = ${S4_ACCESS_KEY}
+          secret_access_key = ${S4_SECRET_KEY}
+          endpoint = ${S4_ENDPOINT}
+          acl = private
+          EOF
+
+      - name: Clean Incomplete Multipart Uploads
+        run: |
+          echo "Cleaning stalled multipart uploads..."
+          rclone cleanup megas4:${{ secrets.MEGA_S4_BUCKET }}
+
+      # 2. Delete versioned folders older than 60 days (protecting /latest/)
+      - name: Prune Images Older than 60 Days
+        run: |
+          echo "Pruning artifacts older than 60 days..."
+          rclone delete megas4:${{ secrets.MEGA_S4_BUCKET }}/windows-server/ \
+            --min-age 60d \
+            --exclude "latest/**" \
+            --verbose
+
+      - name: Remove Empty Buckets / Folders
+        run: |
+          rclone rmdirs megas4:${{ secrets.MEGA_S4_BUCKET }}/windows-server/ \
+            --leave-root \
+            --verbose

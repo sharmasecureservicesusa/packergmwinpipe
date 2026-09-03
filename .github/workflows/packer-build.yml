@@ -1,0 +1,186 @@
+name: Packer Golden Image Factory
+
+on:
+  pull_request:
+    paths:
+      - 'build/**'
+      - '.github/workflows/packer.yml'
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch: # Allows manual trigger from GitHub UI
+    inputs:
+      force_build:
+        description: 'Force full image build'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write # Required if using OIDC to authenticate with AWS/Azure/GCP
+
+env:
+  PACKER_VERSION: "1.10.0"
+  PACKER_PLUGIN_PATH: "~/.packer.d/plugins"
+
+jobs:
+  validate:
+    name: Lint & Validate Packer Template
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Packer CLI
+        uses: hashicorp/setup-packer@main
+        with:
+          version: ${{ env.PACKER_VERSION }}
+
+      - name: Cache Packer Plugins
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.PACKER_PLUGIN_PATH }}
+          key: ${{ runner.os }}-packer-plugins-${{ hashFiles('build/*.pkr.hcl') }}
+
+      - name: Packer Init
+        run: packer init build/
+
+      - name: Check Formatting
+        run: packer fmt -check -diff build/
+
+      - name: Validate Template
+        run: packer validate -syntax-only build/
+
+  build:
+    name: Build & Publish Image
+    needs: validate
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || inputs.force_build == true
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure KVM Permissions (If QEMU)
+        run: |
+          if [ -e /dev/kvm ]; then
+            sudo chmod 666 /dev/kvm
+          fi
+
+      - name: Setup Packer CLI
+        uses: hashicorp/setup-packer@main
+        with:
+          version: ${{ env.PACKER_VERSION }}
+
+      - name: Restore Cached Plugins
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.PACKER_PLUGIN_PATH }}
+          key: ${{ runner.os }}-packer-plugins-${{ hashFiles('build/*.pkr.hcl') }}
+
+      - name: Packer Init
+        run: packer init build/
+
+      # 2. Syntax & HCL format check
+      - name: Packer Format Check
+        run: packer fmt -check build/
+
+      # 3. Validate template & variables
+      - name: Packer Validate
+        run: packer validate -var-file="build/variables.pkrvars.hcl" build/
+
+      # Calculate image tag based on Git reference
+      - name: Set Version Variable
+        id: vars
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "IMAGE_VER=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
+          else
+            echo "IMAGE_VER=1.0.${{ github.run_number }}" >> $GITHUB_ENV
+          fi
+
+      # 4. Production Build with Recommended Runner Flags
+      - name: Packer Build
+        env:
+          # Pass sensitive values securely via PKR_VAR_ environment variables
+          PKR_VAR_winrm_password: ${{ secrets.WINRM_PASSWORD }}
+          PKR_VAR_log_ingest_url: ${{ secrets.LOG_INGEST_URL }}
+          PKR_VAR_log_api_key: ${{ secrets.LOG_API_KEY }}
+          # (Optional) Enable verbose Packer engine logs if needed
+          PACKER_LOG: 1
+          PACKER_LOG_PATH: "packer-debug.log"
+          PKR_VAR_image_version: ${{ env.IMAGE_VER }}
+        run: |
+          packer build \
+            -force \
+            -on-error=abort \
+            -color=false \
+            -timestamp-ui \
+            -var-file="build/variables.pkrvars.hcl" \
+            build/
+
+      - name: Upload Debug Log on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: packer-log
+          path: packer-debug.log
+
+      - name: Compress QCOW2 and Generate Checksum
+        run: |
+          mkdir -p dist
+          IMAGE_TAG="${{ github.ref_name }}"
+          if [ -z "$IMAGE_TAG" ] || [ "$IMAGE_TAG" = "main" ]; then
+            IMAGE_TAG="latest"
+          fi
+
+          echo "Compressing raw build output..."
+          qemu-img convert -O qcow2 -c \
+            output-windows-server/*.qcow2 \
+            dist/windows-server-2022-golden-${IMAGE_TAG}.qcow2
+
+          echo "Generating SHA-256 checksum..."
+          cd dist
+          sha256sum windows-server-2022-golden-${IMAGE_TAG}.qcow2 > windows-server-2022-golden-${IMAGE_TAG}.sha256
+          cd ..
+
+      - name: Upload Artifacts to MEGA S4
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.MEGA_S4_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.MEGA_S4_SECRET_KEY }}
+          AWS_DEFAULT_REGION: "us-east-1"
+          S4_ENDPOINT: ${{ secrets.MEGA_S4_ENDPOINT }}
+          S4_BUCKET: ${{ secrets.MEGA_S4_BUCKET }}
+        run: |
+          # 1. Optimize AWS CLI for high-bandwidth, large-file multipart uploads
+          aws configure set default.s3.multipart_threshold 64MB
+          aws configure set default.s3.multipart_chunksize 64MB
+          aws configure set default.s3.max_concurrent_requests 10
+
+          IMAGE_TAG="${{ github.ref_name }}"
+          if [ -z "$IMAGE_TAG" ] || [ "$IMAGE_TAG" = "main" ]; then
+            IMAGE_TAG="latest"
+          fi
+
+          echo "Uploading versioned image and checksum to MEGA S4..."
+          aws s3 cp dist/windows-server-2022-golden-${IMAGE_TAG}.qcow2 \
+            s3://${S4_BUCKET}/windows-server/${IMAGE_TAG}/image.qcow2 \
+            --endpoint-url ${S4_ENDPOINT} \
+            --no-progress
+
+          aws s3 cp dist/windows-server-2022-golden-${IMAGE_TAG}.sha256 \
+            s3://${S4_BUCKET}/windows-server/${IMAGE_TAG}/image.sha256 \
+            --endpoint-url ${S4_ENDPOINT}
+
+          # 2. If this was a git release tag (e.g. v1.0.0), also update the 'latest' alias
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "Updating 'latest' pointer on MEGA S4..."
+            aws s3 cp s3://${S4_BUCKET}/windows-server/${IMAGE_TAG}/image.qcow2 \
+              s3://${S4_BUCKET}/windows-server/latest/image.qcow2 \
+              --endpoint-url ${S4_ENDPOINT}
+          fi
+
+          echo "MEGA S4 upload completed successfully."

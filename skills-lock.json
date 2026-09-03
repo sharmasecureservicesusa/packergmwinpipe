@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "skills": {
+    "terraform-review": {
+      "source": "c0x12c/ai-toolkit",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/terraform-review/SKILL.md",
+      "computedHash": "a7321e940b76c38ae57c1183c3b62981ec6227de1da0236821f9a3d2d5e22ee6"
+    },
+    "terraform-style-guide": {
+      "source": "hashicorp/agent-skills",
+      "sourceType": "github",
+      "skillPath": "plugins/terraform/skills/terraform-style-guide/SKILL.md",
+      "computedHash": "b47790ecc50d56cba8970b8d9814e96d624cdd64a22a38118d11a554836cd768"
+    },
+    "windows-builder": {
+      "source": "hashicorp/agent-skills",
+      "sourceType": "github",
+      "skillPath": "plugins/packer/skills/windows-builder/SKILL.md",
+      "computedHash": "d3f6b38e62f137b87f322ed8f448bb8806849c6b63d43761dc8d7959fb369145"
+    }
+  }
+}
