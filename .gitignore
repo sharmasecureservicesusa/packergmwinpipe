@@ -1,14 +1,9 @@
-# Packer build artifacts
 output-*/
 *.qcow2
-
-# Generated, secret-backed files (never commit)
 build/ci.pkrvars.hcl
+build/ci.pkrvars.json
 build/config/Autounattend.xml
-
-# Local overrides
+build/config/virtio/virtio-win-gt-x64.msi
 *.auto.pkrvars.hcl
-
-# OS / editor noise
 .DS_Store
 *.swp

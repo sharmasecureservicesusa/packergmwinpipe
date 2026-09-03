@@ -51,11 +51,6 @@
             <DiskID>0</DiskID>
             <PartitionID>2</PartitionID>
           </InstallTo>
-          <!-- Select the OS image by index rather than name: less brittle across
-               ISO respins/editions. Index 4 = Windows Server 2025 Datacenter
-               (Desktop Experience) in this ISO's install.wim. Verify with:
-                 dism /Get-WimInfo /WimFile:"<ISO>:\sources\install.wim"
-               or: wimlib-imagex info install.wim -->
           <InstallFrom>
             <MetaData wcm:action="add">
               <Key>/IMAGE/INDEX</Key>
@@ -70,14 +65,10 @@
         <Organization>Packer</Organization>
       </UserData>
     </component>
-    <!-- VirtIO storage/network drivers so Windows Setup can see the virtio disk.
-         Drop the extracted drivers (viostor, vioscsi, NetKVM, etc.) into
-         build/config/virtio/. Adjust the drive letter if your build CD mounts
-         the answer file on a different letter than A:. -->
     <component name="Microsoft-Windows-PnpCustomizationsWinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
       <DriverPaths>
         <PathAndCredentials wcm:keyValue="1" wcm:action="add">
-          <Path>A:\virtio</Path>
+          <Path>A:\viostor</Path>
         </PathAndCredentials>
       </DriverPaths>
     </component>
@@ -102,13 +93,13 @@
         <Enabled>true</Enabled>
         <LogonCount>1</LogonCount>
         <Password>
-          <Value>$WINRM_PASSWORD</Value>
+          <Value>${WINRM_PASSWORD_XML}</Value>
           <PlainText>true</PlainText>
         </Password>
       </AutoLogon>
       <UserAccounts>
         <AdministratorPassword>
-          <Value>$WINRM_PASSWORD</Value>
+          <Value>${WINRM_PASSWORD_XML}</Value>
           <PlainText>true</PlainText>
         </AdministratorPassword>
       </UserAccounts>

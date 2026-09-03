@@ -1,353 +1,400 @@
-name: Packer Golden Image Factory
+name: Golden Image Pipeline
 
 on:
   workflow_dispatch:
-    inputs:
-      force_build:
-        description: 'Force full image build and refresh upstream drivers'
-        type: boolean
-        default: false
   push:
-    branches:
-      - main
-    tags:
-      - 'v*.*.*'
-    paths:
-      - "build/**"
-      - "scripts/**"
-      - ".github/workflows/build.yml"
-      - ".github/workflows/packer.yml"
-      - ".github/workflows/packer-build.yml"
-  pull_request:
+    branches: [main]
+    tags: ['v*.*.*']
     paths:
       - 'build/**'
-      - '.github/workflows/packer.yml'
+      - 'scripts/**'
+      - 'tests/**'
+      - '.github/workflows/cleanup-s4.yml'
       - '.github/workflows/packer-build.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'build/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - '.github/workflows/cleanup-s4.yml'
+      - '.github/workflows/packer-build.yml'
+
+concurrency:
+  group: golden-image-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
-  id-token: write
 
 env:
-  PACKER_VERSION: "1.14.2"
-  PACKER_PLUGIN_PATH: "~/.packer.d/plugins"
-  AWS_DEFAULT_REGION: "us-east-1"
-
-  # MEGA S4 Credentials & Endpoints
-  AWS_ACCESS_KEY_ID: ${{ secrets.MEGA_S4_ACCESS_KEY }}
-  AWS_SECRET_ACCESS_KEY: ${{ secrets.MEGA_S4_SECRET_KEY }}
-  S4_ENDPOINT: ${{ secrets.MEGA_S4_ENDPOINT }}
-  S4_BUCKET: ${{ secrets.MEGA_S4_BUCKET }}
-
-  # S4 ISO Source
-  S4_BUCKET_ISO: "installmedia"
-  S4_KEY_ISO: "virtiowiniso/winisowithvirtio/Winserver2025-VirtIO.iso"
-
-  # Build Secrets
-  WINRM_PASSWORD: ${{ secrets.WINRM_PASSWORD }}
-  CLOUDFLARE_LOG_INGEST_URL: ${{ secrets.CLOUDFLARE_LOG_INGEST_URL }}
-  LOG_INGEST_KEY: ${{ secrets.LOG_INGEST_KEY }}
+  PACKER_VERSION: '1.16.0'
+  PACKER_PLUGIN_PATH: '~/.packer.d/plugins'
+  VIRTIO_VERSION: '0.1.271-1'
 
 jobs:
-  # =========================================================================
-  # JOB 1: Lint & Validate (Fast Preflight - ZERO ISO Download)
-  # =========================================================================
-  validate:
-    name: Lint & Validate Packer Template
+  changes:
+    name: Detect Build Changes
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      build_required: ${{ steps.detect.outputs.build_required }}
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+      - name: Check Out Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Detect Build Changes
+        id: detect
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          required=false
+          if [[ "$EVENT_NAME" == 'workflow_dispatch' || "$REF_TYPE" == 'tag' ]]; then
+            required=true
+          elif [[ "$EVENT_NAME" == 'push' ]]; then
+            if [[ -z "$BEFORE_SHA" || "$BEFORE_SHA" =~ ^0+$ ]]; then
+              required=true
+            elif ! git diff --quiet "$BEFORE_SHA" "$GITHUB_SHA" -- build scripts .github/workflows/packer-build.yml; then
+              required=true
+            fi
+          fi
+          echo "build_required=$required" >> "$GITHUB_OUTPUT"
 
-      - name: Setup Packer CLI
-        uses: hashicorp/setup-packer@v3
+  validate:
+    name: Validate Packer
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check Out Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Set Up Packer
+        uses: hashicorp/setup-packer@3286471d6cc6756d056a0b199fea5e0becdbc189
         with:
           version: ${{ env.PACKER_VERSION }}
-
       - name: Cache Packer Plugins
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ${{ env.PACKER_PLUGIN_PATH }}
-          key: ${{ runner.os }}-packer-plugins-${{ hashFiles('build/*.pkr.hcl') }}
-
-      - name: Packer Init
+          key: ${{ runner.os }}-packer-${{ hashFiles('build/*.pkr.hcl') }}
+          restore-keys: ${{ runner.os }}-packer-
+      - name: Initialize Packer
         run: packer init build/
-
-      - name: Check Formatting
+      - name: Check Packer Formatting
         run: packer fmt -check -diff build/
-
-      - name: Validate Template Syntax
+      - name: Validate Packer Syntax
         run: packer validate -syntax-only build/
 
-  # =========================================================================
-  # JOB 2: Build & Publish Image
-  # =========================================================================
-  build:
-    name: Build & Publish Image
-    needs: validate
-    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || inputs.force_build == true || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    env:
-      PACKER_LOG: 1
-      PACKER_LOG_PATH: "packer-debug.log"
+  test:
+    name: Test PowerShell
+    runs-on: windows-latest
+    timeout-minutes: 20
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+      - name: Check Out Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install Test Modules
+        shell: pwsh
+        run: |
+          Install-Module Pester -RequiredVersion 6.1.0 -Force -SkipPublisherCheck -Scope CurrentUser
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Force -Scope CurrentUser
+      - name: Analyze PowerShell
+        shell: pwsh
+        run: |
+          $issues = Invoke-ScriptAnalyzer -Path ./scripts -Severity Error,Warning -Recurse
+          $issues | Format-Table -AutoSize
+          if ($issues) {
+              throw 'PSScriptAnalyzer found issues.'
+          }
+      - name: Run Pester
+        shell: pwsh
+        run: |
+          Import-Module Pester -RequiredVersion 6.1.0 -Force
+          $config = [PesterConfiguration]::Default
+          $config.Run.Path = './tests'
+          $config.Run.Exit = $true
+          $config.TestResult.Enabled = $true
+          $config.TestResult.OutputPath = './test-results.xml'
+          $config.TestResult.OutputFormat = 'NUnitXml'
+          $config.Output.Verbosity = 'Detailed'
+          Invoke-Pester -Configuration $config
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: pester-results
+          path: test-results.xml
+          if-no-files-found: ignore
+          retention-days: 14
 
-      - name: Install QEMU, KVM & Utilities
+  build:
+    name: Build and Publish Image
+    needs: [changes, validate, test]
+    if: needs.changes.outputs.build_required == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      AWS_DEFAULT_REGION: us-east-1
+      PACKER_LOG: '1'
+      PACKER_LOG_PATH: packer-debug.log
+      S4_BUCKET_ISO: installmedia
+      S4_KEY_ISO: virtiowiniso/winisowithvirtio/Winserver2025-VirtIO.iso
+    outputs:
+      image_tag: ${{ steps.version.outputs.image_tag }}
+      image_version: ${{ steps.version.outputs.image_version }}
+    steps:
+      - name: Check Out Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install Build Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 qemu-utils xorriso vncsnapshot netpbm
-          if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; fi
-
-      - name: Setup Packer CLI
-        uses: hashicorp/setup-packer@v3
+          sudo apt-get install -y netpbm qemu-system-x86 qemu-utils vncsnapshot xorriso
+      - name: Detect QEMU Accelerator
+        id: accelerator
+        run: |
+          if [[ -e /dev/kvm ]]; then
+            sudo chmod 660 /dev/kvm
+            sudo chgrp "$(id -gn)" /dev/kvm
+            echo 'value=kvm' >> "$GITHUB_OUTPUT"
+          else
+            echo '::warning::KVM is unavailable; QEMU will use slower TCG emulation.'
+            echo 'value=tcg' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Set Up Packer
+        uses: hashicorp/setup-packer@3286471d6cc6756d056a0b199fea5e0becdbc189
         with:
           version: ${{ env.PACKER_VERSION }}
-
-      - name: Restore Cached Plugins
-        uses: actions/cache@v4
+      - name: Cache Packer Plugins
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ${{ env.PACKER_PLUGIN_PATH }}
-          key: ${{ runner.os }}-packer-plugins-${{ hashFiles('build/*.pkr.hcl') }}
-
-      - name: Packer Init
+          key: ${{ runner.os }}-packer-${{ hashFiles('build/*.pkr.hcl') }}
+          restore-keys: ${{ runner.os }}-packer-
+      - name: Initialize Packer
         run: packer init build/
-
-      - name: Preflight Required Secrets
+      - name: Validate Required Secrets
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.MEGA_S4_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.MEGA_S4_SECRET_KEY }}
+          S4_BUCKET: ${{ secrets.MEGA_S4_BUCKET }}
+          S4_ENDPOINT: ${{ secrets.MEGA_S4_ENDPOINT }}
+          WINRM_PASSWORD: ${{ secrets.WINRM_PASSWORD }}
         run: |
-          set -euo pipefail
           missing=0
-          for var in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY S4_ENDPOINT S4_BUCKET \
-                     S4_BUCKET_ISO S4_KEY_ISO WINRM_PASSWORD \
-                     CLOUDFLARE_LOG_INGEST_URL LOG_INGEST_KEY; do
-            if [ -z "${!var:-}" ]; then
-              echo "::error::Missing required value: $var"
+          for name in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY S4_BUCKET S4_ENDPOINT WINRM_PASSWORD; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing required secret: $name"
               missing=1
             fi
           done
-          if [ "$missing" -eq 1 ]; then
-            echo "::error::One or more required secrets/vars are missing under Settings -> Secrets and variables -> Actions."
-            exit 1
+          exit "$missing"
+      - name: Configure HCP Packer
+        env:
+          HCP_CLIENT_ID: ${{ secrets.HCP_CLIENT_ID }}
+          HCP_CLIENT_SECRET: ${{ secrets.HCP_CLIENT_SECRET }}
+          HCP_PROJECT_ID: ${{ secrets.HCP_PROJECT_ID }}
+        run: |
+          if [[ -n "$HCP_CLIENT_ID" && -n "$HCP_CLIENT_SECRET" && -n "$HCP_PROJECT_ID" ]]; then
+            echo 'HCP Packer metadata publishing is enabled.'
+          else
+            echo 'HCP_PACKER_REGISTRY=OFF' >> "$GITHUB_ENV"
+            echo '::notice::HCP Packer metadata publishing is disabled because credentials are incomplete.'
           fi
-          echo "All required secrets/vars are present."
-
-      - name: Configure AWS CLI for MEGA S4
+      - name: Configure S4 Client
         run: |
           aws configure set default.s3.multipart_threshold 64MB
           aws configure set default.s3.multipart_chunksize 64MB
           aws configure set default.s3.max_concurrent_requests 10
-
-      # Resolve ISO ETag for smart cache invalidation
-      - name: Resolve ISO Version from MEGA S4
-        id: iso
-        run: |
-          set -euo pipefail
-          if ! ETAG=$(aws s3api head-object \
-                      --bucket "$S4_BUCKET_ISO" \
-                      --key "$S4_KEY_ISO" \
-                      --endpoint-url "$S4_ENDPOINT" \
-                      --query ETag --output text | tr -d '"'); then
-            echo "::error::ISO not found at s3://$S4_BUCKET_ISO/$S4_KEY_ISO (404)."
-            exit 1
-          fi
-          echo "Resolved ISO ETag: $ETAG"
-          echo "iso_etag=$ETAG" >> "$GITHUB_OUTPUT"
-
-      - name: Cache Windows ISO
-        id: cache-iso
-        uses: actions/cache@v4
-        with:
-          path: iso/Winserver2025-VirtIO.iso
-          key: iso-${{ steps.iso.outputs.iso_etag }}
-
-      - name: Download Windows ISO from MEGA S4 (Only on Cache Miss)
-        if: steps.cache-iso.outputs.cache-hit != 'true'
+      - name: Download Windows ISO
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.MEGA_S4_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.MEGA_S4_SECRET_KEY }}
+          S4_ENDPOINT: ${{ secrets.MEGA_S4_ENDPOINT }}
         run: |
           mkdir -p iso
-          echo "Downloading Windows ISO from MEGA S4..."
-          aws s3 cp \
-            "s3://${S4_BUCKET_ISO}/${S4_KEY_ISO}" \
-            "iso/Winserver2025-VirtIO.iso" \
-            --endpoint-url "$S4_ENDPOINT" \
-            --no-progress
-
-      # -----------------------------------------------------------------------
-      # VirtIO Drivers: Use Committed Files First, Fallback to Upstream
-      # -----------------------------------------------------------------------
-      - name: Check Committed VirtIO Drivers
-        id: check-local-drivers
-        run: |
-          # Verify local repo drivers exist
-          MISSING=0
-          for drv in NetKVM viorng vioscsi viostor; do
-            if [ ! -d "build/config/virtio/$drv" ] || [ -z "$(ls -A build/config/virtio/$drv/*.sys 2>/dev/null || true)" ]; then
-              MISSING=1
-              break
-            fi
-          done
-
-          if [ "$MISSING" -eq 0 ] && [ "${{ inputs.force_build }}" != "true" ]; then
-            echo "use_local=true" >> "$GITHUB_OUTPUT"
-            echo "Committed VirtIO drivers present. Skipping upstream ISO download."
-          else
-            echo "use_local=false" >> "$GITHUB_OUTPUT"
-            echo "Local drivers missing or force_build enabled. Checking upstream Fedora repository."
-          fi
-
-      - name: Resolve VirtIO Upstream Version (Fallback)
-        id: virtio
-        if: steps.check-local-drivers.outputs.use_local != 'true'
-        run: |
-          VER=$(curl -fsSL https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/ \
-                | grep -oE 'virtio-win-[0-9]+\.[0-9]+\.[0-9]+-[0-9]+' \
-                | sort -uV | tail -n1 || echo "stable")
-          echo "Resolved VirtIO version: $VER"
-          echo "virtio_ver=$VER" >> "$GITHUB_OUTPUT"
-
-      - name: Cache VirtIO Upstream Drivers
-        id: cache-virtio
-        if: steps.check-local-drivers.outputs.use_local != 'true'
-        uses: actions/cache@v4
+          aws s3 cp "s3://${S4_BUCKET_ISO}/${S4_KEY_ISO}" iso/Winserver2025-VirtIO.iso --endpoint-url "$S4_ENDPOINT" --no-progress
+      - name: Cache VirtIO Build Inputs
+        id: virtio-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
-          path: virtio-drivers
-          key: virtio-${{ steps.virtio.outputs.virtio_ver }}
-
-      - name: Download & Extract VirtIO Drivers (Fallback Only)
-        if: steps.check-local-drivers.outputs.use_local != 'true' && steps.cache-virtio.outputs.cache-hit != 'true'
+          path: virtio-cache
+          key: virtio-win-${{ env.VIRTIO_VERSION }}-server-2025-amd64
+      - name: Download VirtIO Build Inputs
+        if: steps.virtio-cache.outputs.cache-hit != 'true'
         run: |
-          set -euo pipefail
-          mkdir -p virtio-drivers
-          echo "Downloading VirtIO ISO (${{ steps.virtio.outputs.virtio_ver }})..."
-          curl -fsSL https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso -o /tmp/virtio-win.iso
-          echo "Extracting drivers..."
-          xorriso -osirrox on -indev /tmp/virtio-win.iso -extract / virtio-drivers/
+          mkdir -p virtio-cache
+          url="https://fedora-virt.repo.nfrance.com/virtio-win/direct-downloads/archive-virtio/virtio-win-${VIRTIO_VERSION}/virtio-win.iso"
+          curl --fail --location --retry 3 --output /tmp/virtio-win.iso "$url"
+          xorriso -osirrox on -indev /tmp/virtio-win.iso -extract /viostor/2k25/amd64 virtio-cache/viostor
+          xorriso -osirrox on -indev /tmp/virtio-win.iso -extract /virtio-win-gt-x64.msi virtio-cache/virtio-win-gt-x64.msi
           rm -f /tmp/virtio-win.iso
-
-      - name: Stage VirtIO Drivers for Packer
+      - name: Stage VirtIO Build Inputs
         run: |
-          set -euo pipefail
-          mkdir -p build/config/virtio
-
-          # If using upstream, sync into build/config/virtio
-          if [ "${{ steps.check-local-drivers.outputs.use_local }}" != "true" ]; then
-            for drv in NetKVM vioscsi viostor viorng; do
-              src=$(find "virtio-drivers/$drv" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort -V | tail -n1 || true)
-              if [ -n "$src" ]; then
-                mkdir -p "build/config/virtio/$drv"
-                cp -f "$src"/*.sys "$src"/*.inf "$src"/*.cat "build/config/virtio/$drv/" 2>/dev/null || true
-              fi
-            done
+          driver_dir=$(dirname "$(find virtio-cache -type f -name viostor.inf -print -quit)")
+          installer=$(find virtio-cache -type f -name virtio-win-gt-x64.msi -print -quit)
+          if [[ -z "$driver_dir" || ! -f "$driver_dir/viostor.sys" || ! -f "$driver_dir/viostor.cat" || -z "$installer" ]]; then
+            echo '::error::Pinned VirtIO build inputs are incomplete.'
+            exit 1
           fi
-
-          echo "Staged VirtIO drivers:"
-          ls -R build/config/virtio
-
-      - name: Generate Autounattend.xml
-        run: bash ./scripts/generate-autounattend.sh
-
-      - name: Write Packer Variables
+          rm -rf build/config/virtio/viostor
+          mkdir -p build/config/virtio/viostor
+          cp -a "$driver_dir/." build/config/virtio/viostor/
+          cp "$installer" build/config/virtio/virtio-win-gt-x64.msi
+      - name: Resolve Image Version
+        id: version
         run: |
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            IMAGE_VER="${GITHUB_REF_NAME#v}"
+          if [[ "$GITHUB_REF_TYPE" == 'tag' ]]; then
+            image_version="${GITHUB_REF_NAME#v}"
+            image_tag="$GITHUB_REF_NAME"
           else
-            IMAGE_VER="1.0.${{ github.run_number }}"
+            image_version="1.0.${GITHUB_RUN_NUMBER}"
+            image_tag=latest
           fi
-
-          ISO_PATH="${{ github.workspace }}/iso/Winserver2025-VirtIO.iso"
-          ISO_SHA256=$(sha256sum "$ISO_PATH" | awk '{print $1}')
-
-          cat > build/ci.pkrvars.hcl <<EOF
-          iso_url        = "$ISO_PATH"
-          iso_checksum   = "sha256:${ISO_SHA256}"
-          winrm_password = "${WINRM_PASSWORD}"
-          log_ingest_url = "${CLOUDFLARE_LOG_INGEST_URL}"
-          log_api_key    = "${LOG_INGEST_KEY}"
-          image_version  = "$IMAGE_VER"
-          winrm_timeout  = "20m"
-          EOF
-
-      - name: Packer Validate
-        run: packer validate -var-file="build/ci.pkrvars.hcl" build/
-
-      - name: Packer Build
+          if ! [[ "$image_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid image version: $image_version"
+            exit 1
+          fi
+          if ! [[ "$image_tag" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::Invalid image tag: $image_tag"
+            exit 1
+          fi
+          echo "image_version=$image_version" >> "$GITHUB_OUTPUT"
+          echo "image_tag=$image_tag" >> "$GITHUB_OUTPUT"
+      - name: Prepare Packer Inputs
+        env:
+          ACCELERATOR: ${{ steps.accelerator.outputs.value }}
+          IMAGE_VERSION: ${{ steps.version.outputs.image_version }}
+          LOG_API_KEY: ${{ secrets.LOG_INGEST_KEY }}
+          LOG_INGEST_URL: ${{ secrets.CLOUDFLARE_LOG_INGEST_URL }}
+          WINRM_PASSWORD: ${{ secrets.WINRM_PASSWORD }}
+        run: |
+          bash scripts/generate-autounattend.sh
+          iso_path="$GITHUB_WORKSPACE/iso/Winserver2025-VirtIO.iso"
+          iso_checksum=$(sha256sum "$iso_path" | awk '{print $1}')
+          jq -n \
+            --arg accelerator "$ACCELERATOR" \
+            --arg git_commit "$GITHUB_SHA" \
+            --arg image_version "$IMAGE_VERSION" \
+            --arg iso_checksum "sha256:$iso_checksum" \
+            --arg iso_url "$iso_path" \
+            --arg log_api_key "$LOG_API_KEY" \
+            --arg log_ingest_url "$LOG_INGEST_URL" \
+            --arg winrm_password "$WINRM_PASSWORD" \
+            '{accelerator: $accelerator, git_commit: $git_commit, image_version: $image_version, iso_checksum: $iso_checksum, iso_url: $iso_url, log_api_key: $log_api_key, log_ingest_url: $log_ingest_url, winrm_password: $winrm_password, winrm_timeout: "2h"}' \
+            > build/ci.pkrvars.json
+      - name: Validate Packer Build
+        env:
+          HCP_PACKER_REGISTRY: 'OFF'
+        run: packer validate -var-file=build/ci.pkrvars.json build/
+      - name: Build Image
+        env:
+          HCP_CLIENT_ID: ${{ secrets.HCP_CLIENT_ID }}
+          HCP_CLIENT_SECRET: ${{ secrets.HCP_CLIENT_SECRET }}
+          HCP_ORGANIZATION_ID: ${{ secrets.HCP_ORGANIZATION_ID }}
+          HCP_PACKER_BUILD_FINGERPRINT: run.${{ github.run_id }}.attempt.${{ github.run_attempt }}
+          HCP_PROJECT_ID: ${{ secrets.HCP_PROJECT_ID }}
         run: |
           mkdir -p vnc-captures
           (
-            for i in $(seq 1 240); do
+            while true; do
               vncsnapshot -quiet -allowblank 127.0.0.1:0 "vnc-captures/screen_$(date +%H%M%S).jpg" >/dev/null 2>&1 || true
               sleep 30
             done
           ) &
-          VNC_PID=$!
-
-          packer build \
-            -force \
-            -on-error=abort \
-            -color=false \
-            -timestamp-ui \
-            -var-file="build/ci.pkrvars.hcl" \
-            build/
-          BUILD_RC=$?
-
-          kill $VNC_PID 2>/dev/null || true
-          exit $BUILD_RC
-
-      - name: Upload Debug Log on Failure
+          vnc_pid=$!
+          trap 'kill "$vnc_pid" 2>/dev/null || true' EXIT
+          packer build -force -on-error=cleanup -color=false -timestamp-ui -var-file=build/ci.pkrvars.json build/
+      - name: Upload Build Diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: packer-log
-          path: packer-debug.log
-
-      - name: Upload VNC Screen Captures
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: vnc-captures
-          path: vnc-captures/
+          name: packer-diagnostics
+          path: |
+            packer-debug.log
+            vnc-captures/
+          if-no-files-found: warn
           retention-days: 7
-
-      - name: Compress QCOW2 and Generate Checksum
+      - name: Compress Image
         run: |
           mkdir -p dist
-          IMAGE_TAG="${{ github.ref_name }}"
-          if [ -z "$IMAGE_TAG" ] || [ "$IMAGE_TAG" = "main" ]; then
-            IMAGE_TAG="latest"
-          fi
-
-          echo "Compressing raw QCOW2 build output..."
-          qemu-img convert -O qcow2 -c \
-            output-*/*.qcow2 \
-            dist/windows-server-${IMAGE_TAG}.qcow2
-
-          echo "Generating SHA-256 Checksum..."
-          cd dist
-          sha256sum windows-server-${IMAGE_TAG}.qcow2 > windows-server-${IMAGE_TAG}.sha256
-          cd ..
-
-      - name: Upload Artifacts to MEGA S4
+          qemu-img convert -O qcow2 -c output-*/*.qcow2 dist/image.qcow2
+          (
+            cd dist
+            sha256sum image.qcow2 > image.sha256
+          )
+      - name: Publish Image to S4
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.MEGA_S4_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.MEGA_S4_SECRET_KEY }}
+          IMAGE_TAG: ${{ steps.version.outputs.image_tag }}
+          S4_BUCKET: ${{ secrets.MEGA_S4_BUCKET }}
+          S4_ENDPOINT: ${{ secrets.MEGA_S4_ENDPOINT }}
         run: |
-          IMAGE_TAG="${{ github.ref_name }}"
-          if [ -z "$IMAGE_TAG" ] || [ "$IMAGE_TAG" = "main" ]; then
-            IMAGE_TAG="latest"
+          destination="s3://${S4_BUCKET}/windows-server/${IMAGE_TAG}"
+          aws s3 cp dist/image.qcow2 "$destination/image.qcow2" --endpoint-url "$S4_ENDPOINT" --no-progress
+          aws s3 cp dist/image.sha256 "$destination/image.sha256" --endpoint-url "$S4_ENDPOINT" --no-progress
+          if [[ "$GITHUB_REF_TYPE" == 'tag' ]]; then
+            latest="s3://${S4_BUCKET}/windows-server/latest"
+            aws s3 cp "$destination/image.qcow2" "$latest/image.qcow2" --endpoint-url "$S4_ENDPOINT" --no-progress
+            aws s3 cp "$destination/image.sha256" "$latest/image.sha256" --endpoint-url "$S4_ENDPOINT" --no-progress
           fi
 
-          echo "Uploading versioned image and checksum to MEGA S4..."
-          aws s3 cp dist/windows-server-${IMAGE_TAG}.qcow2 \
-            "s3://${S4_BUCKET}/windows-server/${IMAGE_TAG}/image.qcow2" \
-            --endpoint-url "$S4_ENDPOINT" \
-            --no-progress
-
-          aws s3 cp dist/windows-server-${IMAGE_TAG}.sha256 \
-            "s3://${S4_BUCKET}/windows-server/${IMAGE_TAG}/image.sha256" \
-            --endpoint-url "$S4_ENDPOINT"
-
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            echo "Updating 'latest' pointer on MEGA S4..."
-            aws s3 cp "s3://${S4_BUCKET}/windows-server/${IMAGE_TAG}/image.qcow2" \
-              "s3://${S4_BUCKET}/windows-server/latest/image.qcow2" \
-              --endpoint-url "$S4_ENDPOINT"
-          fi
-
-          echo "MEGA S4 upload completed successfully."
+  release:
+    name: Publish Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Check Out Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Build Release Bundle
+        shell: pwsh
+        run: |
+          $script = './scripts/cloudbase-single-deploy.ps1'
+          $hash = (Get-FileHash -Path $script -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  cloudbase-single-deploy.ps1" | Set-Content ./scripts/cloudbase-single-deploy.ps1.sha256
+          Compress-Archive -Path ./scripts/* -DestinationPath ./cloudbase-deployment-bundle.zip -Force
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.build.outputs.image_tag }}
+        shell: pwsh
+        run: |
+          $assets = @(
+              './scripts/cloudbase-single-deploy.ps1',
+              './scripts/cloudbase-single-deploy.ps1.sha256',
+              './cloudbase-deployment-bundle.zip'
+          )
+          if (gh release view $env:RELEASE_TAG 2>$null) {
+              gh release upload $env:RELEASE_TAG @assets --clobber
+          } else {
+              gh release create $env:RELEASE_TAG @assets --title "Release $env:RELEASE_TAG" --generate-notes --verify-tag
+          }
+      - name: Archive Release Bundle to S4
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.MEGA_S4_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.MEGA_S4_SECRET_KEY }}
+          RELEASE_TAG: ${{ needs.build.outputs.image_tag }}
+          S4_BUCKET: ${{ secrets.MEGA_S4_BUCKET }}
+          S4_ENDPOINT: ${{ secrets.MEGA_S4_ENDPOINT }}
+        shell: pwsh
+        run: |
+          $destination = "s3://$env:S4_BUCKET/releases/$env:RELEASE_TAG/bundle.zip"
+          aws s3 cp ./cloudbase-deployment-bundle.zip $destination --endpoint-url $env:S4_ENDPOINT --no-progress
+          if ($LASTEXITCODE -ne 0) {
+              throw 'Failed to archive the release bundle.'
+          }

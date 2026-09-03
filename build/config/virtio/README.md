@@ -1,8 +1,8 @@
 # VirtIO drivers (required for this build)
 
-This directory must contain the extracted **VirtIO** drivers so that Windows
-Server Setup can see the `virtio` disk and network device configured in
-`windows-server.pkr.hcl` (`disk_interface = "virtio"`, `net_device = "virtio-net"`).
+This directory contains the extracted **VirtIO** drivers used by the build.
+Windows Setup loads only `viostor` from the generated floppy so it can see the
+`virtio` disk. The build uses an in-box `e1000` network adapter for bootstrap.
 
 Without these, Windows Setup will not detect the virtual disk and the build fails.
 
@@ -22,9 +22,12 @@ Without these, Windows Setup will not detect the virtual disk and the build fail
      ...
    ```
 
-3. The answer file (`Autounattend.xml`) references these drivers via
-   `DriverPaths` -> `A:\virtio`. If your build CD mounts the answer file on a
-   different drive letter, update that path in `Autounattend.xml`.
+3. The answer file (`Autounattend.xml`) references the boot-critical driver via
+   `DriverPaths` -> `A:\viostor`.
+
+CI replaces `viostor` with the pinned driver version and stages the matching
+`virtio-win-gt-x64.msi`. Packer installs that MSI in the guest so the finished
+image supports VirtIO storage, networking, ballooning, and other devices.
 
 Note: binary driver files placed here are only used during the build and are
 not copied into the final image (the `file` provisioner copies `build/config`

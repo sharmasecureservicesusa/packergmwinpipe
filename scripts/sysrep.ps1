@@ -1,14 +1,3 @@
-<#
-.SYNOPSIS
-    Cleans system state, flushes telemetry to Cloudflare, and executes Sysprep.
-.DESCRIPTION
-    Prepares a Windows Golden Image for Cloudbase-Init cloning:
-      1. Initializes logger and verifies Unattend.xml.
-      2. Purges Cloudbase-Init state, logs, and temp artifacts.
-      3. Re-enables the local Administrator account.
-      4. Flushes all pending telemetry to Cloudflare Pipelines.
-      5. Runs sysprep.exe /generalize /oobe /unattend.
-#>
 [CmdletBinding()]
 param(
     [ValidateSet('quit', 'shutdown', 'reboot')]
@@ -17,133 +6,69 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# --- Load shared DeploymentLogger module (single source of truth) -----------
-if (-not (Get-Module -Name DeploymentLogger)) {
-    Import-Module DeploymentLogger -Force -ErrorAction SilentlyContinue
+$modulePath = Join-Path $PSScriptRoot 'modules/DeploymentLogger.psm1'
+if (Test-Path -LiteralPath $modulePath) {
+    Import-Module $modulePath -Force
+} else {
+    Import-Module DeploymentLogger -Force
 }
-if (-not (Get-Command Get-DeploymentLogger -ErrorAction SilentlyContinue)) {
-    $moduleCandidates = @(
-        (Join-Path $PSScriptRoot 'modules/DeploymentLogger.psm1')
-        (Join-Path $PSScriptRoot '../modules/DeploymentLogger.psm1')
-    )
-    foreach ($candidate in $moduleCandidates) {
-        if (Test-Path $candidate) {
-            Import-Module $candidate -Force -ErrorAction SilentlyContinue
-            if (Get-Command Get-DeploymentLogger -ErrorAction SilentlyContinue) { break }
-        }
-    }
-}
-if (-not (Get-Command Get-DeploymentLogger -ErrorAction SilentlyContinue)) {
-    throw 'DeploymentLogger module not found. Ensure the Packer file provisioner copied scripts/modules/DeploymentLogger.psm1 into the guest PowerShell module path.'
-}
-
 $Logger = Get-DeploymentLogger
 
-function Write-DeployLog([string]$msg, [string]$lvl = "INFO", [hashtable]$meta = @{}) {
-    if ($Logger) {
-        $Logger.Log($msg, $lvl, $meta)
-    } else {
-        Write-Host "[$lvl] $msg"
-    }
-}
-
 try {
-    Write-DeployLog "Starting image generalization and pre-Sysprep cleanup..." "NOTICE"
-
-    # -------------------------------------------------------------------------
-    # 2. Prerequisite Check: Cloudbase-Init Unattend.xml
-    # -------------------------------------------------------------------------
-    $cbiDir = "C:\Program Files\Cloudbase Solutions\Cloudbase-Init"
-    $unattendXml = Join-Path $cbiDir "conf\Unattend.xml"
-
-    if (-not (Test-Path -LiteralPath $unattendXml -PathType Leaf)) {
-        throw "Cloudbase-Init Unattend.xml not found at expected location: $unattendXml"
+    $Logger.Log('Starting image generalization and cleanup...', 'NOTICE')
+    $cloudbaseDirectory = 'C:\Program Files\Cloudbase Solutions\Cloudbase-Init'
+    $unattendFile = Join-Path $cloudbaseDirectory 'conf\Unattend.xml'
+    if (-not (Test-Path -LiteralPath $unattendFile -PathType Leaf)) {
+        throw "Cloudbase-Init Unattend.xml not found: $unattendFile"
     }
-    Write-DeployLog "Validated Cloudbase-Init Unattend.xml at: $unattendXml" "INFO"
-
-    # -------------------------------------------------------------------------
-    # 3. Purge Cloudbase-Init Run History & Temporary State
-    # -------------------------------------------------------------------------
-    Write-DeployLog "Purging Cloudbase-Init registry keys and previous run metadata..." "INFO"
-
-    # Remove Cloudbase-Init registry tracking keys so cloned instances run fresh
-    $cbiRegKey = "HKLM:\SOFTWARE\Cloudbase Solutions\Cloudbase-Init"
-    if (Test-Path $cbiRegKey) {
-        Remove-Item -Path $cbiRegKey -Recurse -Force -ErrorAction SilentlyContinue
+    $cloudbaseRegistry = 'HKLM:\SOFTWARE\Cloudbase Solutions\Cloudbase-Init'
+    if (Test-Path -LiteralPath $cloudbaseRegistry) {
+        Remove-Item -Path $cloudbaseRegistry -Recurse -Force -ErrorAction SilentlyContinue
     }
-
-    # Clean old Cloudbase-Init logs so the template image starts clean
-    $cbiLogDir = Join-Path $cbiDir "log"
-    if (Test-Path $cbiLogDir) {
-        Get-ChildItem -Path $cbiLogDir -File | Remove-Item -Force -ErrorAction SilentlyContinue
+    $cloudbaseLogDirectory = Join-Path $cloudbaseDirectory log
+    if (Test-Path -LiteralPath $cloudbaseLogDirectory) {
+        Get-ChildItem -Path $cloudbaseLogDirectory -File | Remove-Item -Force -ErrorAction SilentlyContinue
     }
-
-    # -------------------------------------------------------------------------
-    # 4. Reset & Ensure Administrator Account is Active
-    # -------------------------------------------------------------------------
-    Write-DeployLog "Ensuring built-in Administrator account is active..." "INFO"
-    & net.exe user Administrator /active:yes | Out-Null
-
-    # Reset execution policy to RemoteSigned for safety
+    Enable-LocalUser -Name Administrator
     Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope LocalMachine -Force
-
-    # Clear Windows temporary files
-    $tempPaths = @("C:\Windows\Temp\*", "$env:TEMP\*")
-    foreach ($path in $tempPaths) {
+    foreach ($path in @('C:\Windows\Temp\*', "$env:TEMP\*")) {
         Remove-Item -Path $path -Recurse -Force -ErrorAction SilentlyContinue
     }
-
-    # -------------------------------------------------------------------------
-    # 5. Flush Telemetry BEFORE Network Shutdown (CRITICAL)
-    # -------------------------------------------------------------------------
-    Write-DeployLog "Pre-Sysprep cleanup complete. Sealing image and launching Sysprep..." "NOTICE" @{
-        Action      = $Action
-        UnattendXml = $unattendXml
-        Timestamp   = (Get-Date).ToUniversalTime().ToString("o")
-    }
-
-    # Flush the buffer now while outbound TCP/DNS is still alive
-    $Logger.Log("Flushing telemetry events to Cloudflare Pipelines before network shutdown...", "NOTICE")
+    $Logger.Log('Cleanup completed. Starting Sysprep.', 'NOTICE', @{
+        Action = $Action
+        UnattendFile = $unattendFile
+        Timestamp = (Get-Date).ToUniversalTime().ToString('o')
+    })
     $Logger.Flush()
-
-    # -------------------------------------------------------------------------
-    # 6. Execute Sysprep
-    # -------------------------------------------------------------------------
-    $sysprepExe = "$env:SystemRoot\System32\Sysprep\sysprep.exe"
-    $sysprepArgs = @(
-        "/generalize",
-        "/oobe",
+    $sysprep = "$env:SystemRoot\System32\Sysprep\sysprep.exe"
+    $arguments = @(
+        '/generalize',
+        '/oobe',
         "/$Action",
-        "/unattend:`"$unattendXml`""
+        "/unattend:`"$unattendFile`""
     )
-
-    $Logger.Log("Invoking Sysprep with parameters: $($sysprepArgs -join ' ')", "WARN")
-
-    $proc = Start-Process -FilePath $sysprepExe `
-                          -ArgumentList $sysprepArgs `
-                          -NoNewWindow `
-                          -PassThru `
-                          -Wait
-
-    if ($proc.ExitCode -ne 0) {
-        throw "Sysprep failed with exit code $($proc.ExitCode)"
+    $process = Start-Process -FilePath $sysprep -ArgumentList $arguments -NoNewWindow -PassThru -Wait
+    if ($process.ExitCode -ne 0) {
+        throw "Sysprep failed with exit code $($process.ExitCode)."
     }
-
-    $Logger.Log("Sysprep completed successfully with exit code 0.", "NOTICE")
-
+    $deadline = (Get-Date).AddMinutes(10)
+    do {
+        $imageState = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Setup\State').ImageState
+        if ($imageState -eq 'IMAGE_STATE_GENERALIZE_RESEAL_TO_OOBE') {
+            break
+        }
+        Start-Sleep -Seconds 10
+    } while ((Get-Date) -lt $deadline)
+    if ($imageState -ne 'IMAGE_STATE_GENERALIZE_RESEAL_TO_OOBE') {
+        throw "Sysprep did not reach the expected image state. Current state: $imageState"
+    }
+    $Logger.Log('Sysprep completed successfully.', 'NOTICE')
 } catch {
-    $errMsg = $_.Exception.Message
-    $Logger.Log("CRITICAL ERROR in sysprep.ps1: $errMsg", "ERROR")
-
-    # Best-effort error report before halting
-    try {
-        $Logger.LogException($_, "Fatal failure during Sysprep execution")
-        $Logger.Flush()
-    } catch {
-        # Network may already be disconnected
-    }
-
-    throw $_
+    $Logger.LogException($_, 'Image generalization failed')
+    $Logger.Flush()
+    throw
 } finally {
-    if ($Logger) { $Logger.Flush() }
+    if ($Logger) {
+        $Logger.Flush()
+    }
 }

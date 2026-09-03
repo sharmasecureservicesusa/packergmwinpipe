@@ -27,7 +27,13 @@ variable "image_version" {
 variable "vm_name" {
   type        = string
   description = "Name of the resulting virtual machine disk image"
-  default     = "windows-server-2022-golden"
+  default     = "windows-server-2025-golden"
+}
+
+variable "git_commit" {
+  type        = string
+  description = "Git commit associated with the image build"
+  default     = "local"
 }
 
 variable "iso_url" {
@@ -83,6 +89,17 @@ variable "disk_size" {
   }
 }
 
+variable "accelerator" {
+  type        = string
+  description = "QEMU accelerator: 'kvm' for hardware virtualization, 'tcg' for software emulation"
+  default     = "kvm"
+
+  validation {
+    condition     = contains(["kvm", "tcg"], var.accelerator)
+    error_message = "The accelerator must be either 'kvm' or 'tcg'."
+  }
+}
+
 variable "winrm_username" {
   type        = string
   description = "Bootstrap local administrator username"
@@ -94,14 +111,9 @@ variable "winrm_username" {
   }
 }
 
-# Build-time only temporary password. It is baked into build/config/Autounattend.xml
-# so the WinRM communicator can connect during the build, then wiped by Sysprep
-# during generalization. Override in CI with `-var winrm_password=...` to avoid
-# sharing a committed secret.
 variable "winrm_password" {
   type        = string
   description = "Temporary build password (must match build/config/Autounattend.xml)"
-  default     = "P@ck3r-Build-Temp!2024"
   sensitive   = true
 }
 
@@ -111,7 +123,6 @@ variable "winrm_timeout" {
   default     = "2h"
 }
 
-# Cloudflare Telemetry Variables
 variable "log_ingest_url" {
   type        = string
   description = "Cloudflare Pipelines HTTP ingestion endpoint URL"
@@ -126,7 +137,6 @@ variable "log_api_key" {
 }
 
 locals {
-  # Shared environment passed to every in-guest PowerShell provisioner.
   provisioner_env = [
     "LOG_INGEST_URL=${var.log_ingest_url}",
     "LOG_API_KEY=${var.log_api_key}",
@@ -144,61 +154,89 @@ source "qemu" "windows" {
   memory         = var.memory_mb
   disk_size      = var.disk_size
   disk_interface = "virtio"
-  net_device     = "virtio-net"
+  net_device     = "e1000"
   format         = "qcow2"
-  accelerator    = "kvm"
+  accelerator    = var.accelerator
   headless       = true
 
   communicator   = "winrm"
   winrm_username = var.winrm_username
   winrm_password = var.winrm_password
   winrm_timeout  = var.winrm_timeout
-  # Cleartext WinRM (no SSL) is acceptable here because the build runs on an
-  # isolated QEMU/KVM virtual network. For shared networks, set winrm_use_ssl = true.
   winrm_use_ssl  = false
   winrm_insecure = true
 
-  # Answer file served from the generated CD (CD root).
   cd_files = [
-    "./build/config/Autounattend.xml",
-    "./build/config/virtio"
+    "./build/config/Autounattend.xml"
   ]
 
-  # VirtIO storage/network drivers served from a floppy, which Windows Setup mounts
-  # as A:\. This matches the A:\virtio driver path referenced in Autounattend.xml.
   floppy_dirs = [
-    "./build/config/virtio"
+    "./build/config/virtio/viostor"
   ]
 
-  qemuargs = [
+  qemuargs = var.accelerator == "kvm" ? [
     ["-cpu", "host"],
+    ["-smp", "${var.cpu_cores},sockets=1,cores=${var.cpu_cores},threads=1"]
+    ] : [
+    ["-cpu", "max"],
     ["-smp", "${var.cpu_cores},sockets=1,cores=${var.cpu_cores},threads=1"]
   ]
 
-  # Headless diagnostics: capture the guest screen over VNC so we can see where
-  # Windows Setup stops (disk driver, image selection, OOBE, etc.) instead of
-  # guessing while it sits at "Waiting for WinRM".
-  vnc_bind_address = "0.0.0.0"
+  vnc_bind_address = "127.0.0.1"
   vnc_port_min     = 5900
   vnc_port_max     = 5900
+
+  shutdown_command = "shutdown /s /t 10 /f /d p:4:1 /c \"Packer image sealed\""
+  shutdown_timeout = "30m"
 }
 
 build {
   sources = ["source.qemu.windows"]
 
+  hcp_packer_registry {
+    bucket_name = var.vm_name
+    description = "Windows Server 2025 golden image built with Packer QEMU"
+
+    bucket_labels = {
+      "os"      = "windows"
+      "edition" = "server-2025-golden"
+      "team"    = "platform"
+    }
+
+    build_labels = {
+      "image_version" = var.image_version
+      "git_commit"    = var.git_commit
+    }
+  }
+
+  provisioner "powershell" {
+    inline = [
+      "New-Item -Path 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules\\DeploymentLogger' -ItemType Directory -Force | Out-Null"
+    ]
+  }
+
   provisioner "file" {
     source      = "./scripts/modules/DeploymentLogger.psm1"
-    destination = "C:/Windows/System32/WindowsPowerShell/v1.0/Modules/DeploymentLogger.psm1"
+    destination = "C:/Windows/System32/WindowsPowerShell/v1.0/Modules/DeploymentLogger/DeploymentLogger.psm1"
   }
 
   provisioner "file" {
     source      = "./build/config"
-    destination = "C:/Windows/Temp/config"
+    destination = "C:/Windows/Temp/"
   }
 
-  # ---------------------------------------------------------------------------
-  # 1. Patch the base image before layering software (golden-image best practice).
-  # ---------------------------------------------------------------------------
+  provisioner "powershell" {
+    timeout = "15m"
+    inline = [
+      "$installer = 'C:\\Windows\\Temp\\config\\virtio\\virtio-win-gt-x64.msi'",
+      "if (-not (Test-Path -LiteralPath $installer)) { throw \"VirtIO installer missing: $installer\" }",
+      "$signature = Get-AuthenticodeSignature -FilePath $installer",
+      "if ($signature.Status -ne 'Valid') { throw \"VirtIO installer signature is $($signature.Status)\" }",
+      "$process = Start-Process msiexec.exe -ArgumentList @('/i', \"`\"$installer`\"\", '/qn', '/norestart', '/l*v', 'C:\\Windows\\Temp\\virtio-install.log') -Wait -PassThru",
+      "if ($process.ExitCode -notin @(0, 3010)) { throw \"VirtIO installation failed with exit code $($process.ExitCode)\" }"
+    ]
+  }
+
   provisioner "windows-update" {
     search_criteria = "IsInstalled=0"
     filters = [
@@ -215,82 +253,52 @@ build {
     restart_timeout = "1h"
   }
 
-  # ---------------------------------------------------------------------------
-  # 2. Cloudbase-Init single deploy (telemetry bootstrap).
-  # ---------------------------------------------------------------------------
   provisioner "powershell" {
     environment_vars = local.provisioner_env
+    timeout          = "3h"
     scripts = [
       "./scripts/cloudbase-single-deploy.ps1"
     ]
   }
 
-  # ---------------------------------------------------------------------------
-  # 3. Handle any pending reboot demanded by Windows Updates.
-  # ---------------------------------------------------------------------------
   provisioner "windows-restart" {
     restart_check_command = "powershell -command \"& {Get-Service -Name winrm}\""
-    restart_timeout       = "15m"
+    restart_timeout       = "30m"
   }
 
-  # ---------------------------------------------------------------------------
-  # 4. OpenSSH Server Setup (Port 22 & sshd_config Administrator Fix)
-  # ---------------------------------------------------------------------------
   provisioner "powershell" {
     environment_vars = local.provisioner_env
-    scripts = [
-      "./scripts/setup-openssh.ps1"
-    ]
-  }
-
-  # ---------------------------------------------------------------------------
-  # 5. Cloudbase-Init Installation & Production Config Injection
-  # ---------------------------------------------------------------------------
-  provisioner "powershell" {
-    environment_vars = local.provisioner_env
+    timeout          = "30m"
     scripts = [
       "./scripts/install-cloudbase-init.ps1",
       "./scripts/configure-cloudbase-init.ps1"
     ]
   }
 
-  # ---------------------------------------------------------------------------
-  # 6. Tier 2: Live In-Guest Verification (Fails build if VM is in bad state)
-  # ---------------------------------------------------------------------------
   provisioner "powershell" {
     inline = [
       "Write-Host '=========================================' -ForegroundColor Cyan",
       "Write-Host ' RUNNING LIVE IN-GUEST SYSTEM CHECKS     ' -ForegroundColor Cyan",
       "Write-Host '=========================================' -ForegroundColor Cyan",
-
-      # Verify OpenSSH Service
       "$sshd = Get-Service -Name sshd -ErrorAction SilentlyContinue",
       "if (-not $sshd -or $sshd.Status -ne 'Running') { throw 'Verification Failed: sshd service is not active.' }",
       "Write-Host '[PASS] OpenSSH service is running.' -ForegroundColor Green",
-
-      # Verify Port 22 is listening
       "$port22 = Get-NetTCPConnection -LocalPort 22 -State Listen -ErrorAction SilentlyContinue",
       "if (-not $port22) { throw 'Verification Failed: Port 22 is not listening.' }",
       "Write-Host '[PASS] TCP Port 22 is listening.' -ForegroundColor Green",
-
-      # Verify Cloudbase-Init Configs
       "$cbiDir = 'C:\\Program Files\\Cloudbase Solutions\\Cloudbase-Init\\conf'",
       "if (-not (Test-Path \"$cbiDir\\cloudbase-init.conf\")) { throw 'Verification Failed: cloudbase-init.conf missing.' }",
       "if (-not (Test-Path \"$cbiDir\\cloudbase-init-unattend.conf\")) { throw 'Verification Failed: cloudbase-init-unattend.conf missing.' }",
       "Write-Host '[PASS] Cloudbase-Init configuration files validated.' -ForegroundColor Green",
-
-      # Verify Administrator is active
       "$admin = Get-LocalUser -Name Administrator",
       "if (-not $admin.Enabled) { throw 'Verification Failed: Local Administrator is disabled.' }",
       "Write-Host '[PASS] Administrator account is enabled.' -ForegroundColor Green"
     ]
   }
 
-  # ---------------------------------------------------------------------------
-  # 7. Final Generalization: Pre-Sysprep Flush & Sysprep Execution
-  # ---------------------------------------------------------------------------
   provisioner "powershell" {
     environment_vars = local.provisioner_env
+    timeout          = "30m"
     scripts = [
       "./scripts/sysrep.ps1"
     ]
