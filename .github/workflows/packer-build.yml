@@ -35,7 +35,7 @@ env:
 jobs:
   changes:
     name: Detect Build Changes
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 10
     outputs:
       build_required: ${{ steps.detect.outputs.build_required }}
@@ -66,7 +66,7 @@ jobs:
 
   validate:
     name: Validate Packer
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - name: Check Out Repository
@@ -74,7 +74,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Set Up Packer
-        uses: hashicorp/setup-packer@3286471d6cc6756d056a0b199fea5e0becdbc189
+        uses: hashicorp/setup-packer@ce93c3c08a6c2ff2275bf4b54ff0d9a75f6c9789
         with:
           version: ${{ env.PACKER_VERSION }}
       - name: Cache Packer Plugins
@@ -137,7 +137,7 @@ jobs:
     name: Build and Publish Image
     needs: [changes, validate, test]
     if: needs.changes.outputs.build_required == 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: 360
     env:
       AWS_DEFAULT_REGION: us-east-1
@@ -169,7 +169,7 @@ jobs:
             echo 'value=tcg' >> "$GITHUB_OUTPUT"
           fi
       - name: Set Up Packer
-        uses: hashicorp/setup-packer@3286471d6cc6756d056a0b199fea5e0becdbc189
+        uses: hashicorp/setup-packer@ce93c3c08a6c2ff2275bf4b54ff0d9a75f6c9789
         with:
           version: ${{ env.PACKER_VERSION }}
       - name: Cache Packer Plugins
