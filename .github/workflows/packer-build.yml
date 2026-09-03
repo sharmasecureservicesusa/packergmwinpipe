@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       force_build:
-        description: 'Force full image build'
+        description: 'Force full image build and refresh upstream drivers'
         type: boolean
         default: false
   push:
@@ -24,59 +24,37 @@ on:
       - '.github/workflows/packer.yml'
       - '.github/workflows/packer-build.yml'
 
-# Required GitHub Actions secrets (Settings -> Secrets and variables -> Actions).
-# ALL of the following are MANDATORY; the workflow fails fast if any is missing:
-#   WINRM_PASSWORD             temp build password (must be XML-safe: no < or &)
-#   MEGA_S4_ACCESS_KEY         MEGA S4 access key (ISO source + image upload)
-#   MEGA_S4_SECRET_KEY         MEGA S4 secret key (ISO source + image upload)
-#   MEGA_S4_ENDPOINT           MEGA S4 endpoint URL (ISO source + image upload)
-#   MEGA_S4_BUCKET             MEGA S4 bucket for built image uploads
-#   CLOUDFLARE_LOG_INGEST_URL  Cloudflare Pipelines ingest URL
-#   LOG_INGEST_KEY             Cloudflare Pipelines auth key (Bearer token)
-#
-# The Windows ISO is downloaded from MEGA S4 (S4_BUCKET_ISO/S4_KEY_ISO below) at build
-# time and cached in GitHub Actions, keyed by the object's S3 ETag. When the ISO in S4
-# is updated (new ETag) the cache is invalidated and re-downloaded on the next run.
-#
-# The writable Packer variable file (build/ci.pkrvars.hcl) is generated at runtime
-# from these secrets (and gitignored). No secret material is ever committed.
-
 permissions:
   contents: read
-  id-token: write # Required if using OIDC to authenticate with AWS/Azure/GCP
+  id-token: write
 
-# ----------------------------------------------------------------------------
-# Global environment: every job and step below inherits these values, so the
-# S4 credentials/config and secrets are available wherever they are needed.
-# ----------------------------------------------------------------------------
 env:
   PACKER_VERSION: "1.14.2"
   PACKER_PLUGIN_PATH: "~/.packer.d/plugins"
   AWS_DEFAULT_REGION: "us-east-1"
 
-  # MEGA S4 credentials (used for both the ISO source and the image upload).
+  # MEGA S4 Credentials & Endpoints
   AWS_ACCESS_KEY_ID: ${{ secrets.MEGA_S4_ACCESS_KEY }}
   AWS_SECRET_ACCESS_KEY: ${{ secrets.MEGA_S4_SECRET_KEY }}
   S4_ENDPOINT: ${{ secrets.MEGA_S4_ENDPOINT }}
   S4_BUCKET: ${{ secrets.MEGA_S4_BUCKET }}
 
-  # Location of the Windows ISO inside MEGA S4.
+  # S4 ISO Source
   S4_BUCKET_ISO: "installmedia"
   S4_KEY_ISO: "virtiowiniso/winisowithvirtio/Winserver2025-VirtIO.iso"
 
-  # Build-time secrets.
+  # Build Secrets
   WINRM_PASSWORD: ${{ secrets.WINRM_PASSWORD }}
   CLOUDFLARE_LOG_INGEST_URL: ${{ secrets.CLOUDFLARE_LOG_INGEST_URL }}
   LOG_INGEST_KEY: ${{ secrets.LOG_INGEST_KEY }}
 
 jobs:
   # =========================================================================
-  # JOB 1: Lint & Validate Packer Template
+  # JOB 1: Lint & Validate (Fast Preflight - ZERO ISO Download)
   # =========================================================================
   validate:
     name: Lint & Validate Packer Template
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -85,73 +63,6 @@ jobs:
         uses: hashicorp/setup-packer@v3
         with:
           version: ${{ env.PACKER_VERSION }}
-
-      # --- Download the Windows ISO from MEGA S4 (cached across runs) ---
-      # Guarded off PRs: `validate` only runs `packer validate -syntax-only`, which
-      # never reads the ISO, so skip the multi-GB download on pull requests.
-      - name: Preflight required secrets
-        if: github.event_name != 'pull_request'
-        run: |
-          set -euo pipefail
-          missing=0
-          for var in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY S4_ENDPOINT S4_BUCKET \
-                     S4_BUCKET_ISO S4_KEY_ISO WINRM_PASSWORD \
-                     CLOUDFLARE_LOG_INGEST_URL LOG_INGEST_KEY; do
-            if [ -z "${!var:-}" ]; then
-              echo "::error::Missing required value: $var"
-              missing=1
-            fi
-          done
-          if [ "$missing" -eq 1 ]; then
-            echo "::error::One or more required secrets/vars are not set. Configure them under Settings -> Secrets and variables -> Actions."
-            exit 1
-          fi
-          echo "All required secrets/vars are present."
-
-      - name: Configure AWS CLI for MEGA S4 (ISO source)
-        if: github.event_name != 'pull_request'
-        run: |
-          aws configure set default.s3.multipart_threshold 64MB
-          aws configure set default.s3.multipart_chunksize 64MB
-          aws configure set default.s3.max_concurrent_requests 10
-
-      - name: Resolve ISO version from MEGA S4
-        id: iso
-        if: github.event_name != 'pull_request'
-        run: |
-          set -euo pipefail
-          if ! ETAG=$(aws s3api head-object \
-                      --bucket "$S4_BUCKET_ISO" \
-                      --key "$S4_KEY_ISO" \
-                      --endpoint-url "$S4_ENDPOINT" \
-                      --query ETag --output text | tr -d '"'); then
-            echo "::error::ISO not found at s3://$S4_BUCKET_ISO/$S4_KEY_ISO (404). Listing bucket to help locate the real path:"
-            echo "--- top-level of bucket '$S4_BUCKET_ISO' ---"
-            aws s3 ls "s3://$S4_BUCKET_ISO/" --endpoint-url "$S4_ENDPOINT" || true
-            echo "--- objects matching *.iso under '$S4_BUCKET_ISO' ---"
-            aws s3 ls "s3://$S4_BUCKET_ISO/" --recursive --endpoint-url "$S4_ENDPOINT" | grep -i '\.iso' || echo "(no .iso objects found)"
-            exit 1
-          fi
-          echo "Resolved ISO ETag: $ETAG"
-          echo "iso_etag=$ETAG" >> "$GITHUB_OUTPUT"
-
-      - name: Cache Windows ISO
-        id: cache-iso
-        if: github.event_name != 'pull_request'
-        uses: actions/cache@v4
-        with:
-          path: iso/Winserver2025-VirtIO.iso
-          key: iso-${{ steps.iso.outputs.iso_etag }}
-
-      - name: Download Windows ISO from MEGA S4
-        if: github.event_name != 'pull_request' && steps.cache-iso.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p iso
-          aws s3 cp \
-            "s3://${S4_BUCKET_ISO}/${S4_KEY_ISO}" \
-            "iso/Winserver2025-VirtIO.iso" \
-            --endpoint-url "$S4_ENDPOINT" \
-            --no-progress
 
       - name: Cache Packer Plugins
         uses: actions/cache@v4
@@ -165,7 +76,7 @@ jobs:
       - name: Check Formatting
         run: packer fmt -check -diff build/
 
-      - name: Validate Template
+      - name: Validate Template Syntax
         run: packer validate -syntax-only build/
 
   # =========================================================================
@@ -176,30 +87,18 @@ jobs:
     needs: validate
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || inputs.force_build == true || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-
     env:
       PACKER_LOG: 1
       PACKER_LOG_PATH: "packer-debug.log"
-
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install QEMU / KVM
+      - name: Install QEMU, KVM & Utilities
         run: |
           sudo apt-get update
-          # qemu-system-x86/qemu-utils: the hypervisor. xorriso: lets Packer's QEMU
-          # builder create the CD ISO that carries Autounattend.xml (StepCreateCD).
-          # netpbm + vncsnapshot let us capture the headless guest screen for debugging.
           sudo apt-get install -y qemu-system-x86 qemu-utils xorriso vncsnapshot netpbm
-          # Ensure the runner can use hardware acceleration.
           if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; fi
-
-      - name: Configure KVM Permissions (If QEMU)
-        run: |
-          if [ -e /dev/kvm ]; then
-            sudo chmod 666 /dev/kvm
-          fi
 
       - name: Setup Packer CLI
         uses: hashicorp/setup-packer@v3
@@ -215,8 +114,7 @@ jobs:
       - name: Packer Init
         run: packer init build/
 
-      # --- Download the Windows ISO from MEGA S4 (cached across runs) ---
-      - name: Preflight required secrets
+      - name: Preflight Required Secrets
         run: |
           set -euo pipefail
           missing=0
@@ -229,21 +127,19 @@ jobs:
             fi
           done
           if [ "$missing" -eq 1 ]; then
-            echo "::error::One or more required secrets/vars are not set. Configure them under Settings -> Secrets and variables -> Actions."
+            echo "::error::One or more required secrets/vars are missing under Settings -> Secrets and variables -> Actions."
             exit 1
           fi
           echo "All required secrets/vars are present."
 
-      - name: Configure AWS CLI for MEGA S4 (ISO source)
+      - name: Configure AWS CLI for MEGA S4
         run: |
           aws configure set default.s3.multipart_threshold 64MB
           aws configure set default.s3.multipart_chunksize 64MB
           aws configure set default.s3.max_concurrent_requests 10
 
-      # Resolve the current "version" of the ISO in S4 via its ETag. Using the ETag
-      # as the cache key means a re-uploaded/updated object invalidates the GitHub
-      # Actions cache and forces a fresh download on the next run.
-      - name: Resolve ISO version from MEGA S4
+      # Resolve ISO ETag for smart cache invalidation
+      - name: Resolve ISO Version from MEGA S4
         id: iso
         run: |
           set -euo pipefail
@@ -252,11 +148,7 @@ jobs:
                       --key "$S4_KEY_ISO" \
                       --endpoint-url "$S4_ENDPOINT" \
                       --query ETag --output text | tr -d '"'); then
-            echo "::error::ISO not found at s3://$S4_BUCKET_ISO/$S4_KEY_ISO (404). Listing bucket to help locate the real path:"
-            echo "--- top-level of bucket '$S4_BUCKET_ISO' ---"
-            aws s3 ls "s3://$S4_BUCKET_ISO/" --endpoint-url "$S4_ENDPOINT" || true
-            echo "--- objects matching *.iso under '$S4_BUCKET_ISO' ---"
-            aws s3 ls "s3://$S4_BUCKET_ISO/" --recursive --endpoint-url "$S4_ENDPOINT" | grep -i '\.iso' || echo "(no .iso objects found)"
+            echo "::error::ISO not found at s3://$S4_BUCKET_ISO/$S4_KEY_ISO (404)."
             exit 1
           fi
           echo "Resolved ISO ETag: $ETAG"
@@ -269,117 +161,92 @@ jobs:
           path: iso/Winserver2025-VirtIO.iso
           key: iso-${{ steps.iso.outputs.iso_etag }}
 
-      - name: Download Windows ISO from MEGA S4
+      - name: Download Windows ISO from MEGA S4 (Only on Cache Miss)
         if: steps.cache-iso.outputs.cache-hit != 'true'
         run: |
           mkdir -p iso
+          echo "Downloading Windows ISO from MEGA S4..."
           aws s3 cp \
             "s3://${S4_BUCKET_ISO}/${S4_KEY_ISO}" \
             "iso/Winserver2025-VirtIO.iso" \
             --endpoint-url "$S4_ENDPOINT" \
             --no-progress
 
-      # --- VirtIO drivers: download upstream ISO, extract, and cache ---
-      # The Packer template reads drivers from ./build/config/virtio via floppy_dirs.
-      # We cache the extracted drivers (keyed by the upstream ISO version) and sync
-      # them into build/config/virtio before the build so updates are picked up.
-      - name: Resolve VirtIO upstream version
-        id: virtio
+      # -----------------------------------------------------------------------
+      # VirtIO Drivers: Use Committed Files First, Fallback to Upstream
+      # -----------------------------------------------------------------------
+      - name: Check Committed VirtIO Drivers
+        id: check-local-drivers
         run: |
-          # The stable-virtio directory listing exposes the versioned ISO name.
+          # Verify local repo drivers exist
+          MISSING=0
+          for drv in NetKVM viorng vioscsi viostor; do
+            if [ ! -d "build/config/virtio/$drv" ] || [ -z "$(ls -A build/config/virtio/$drv/*.sys 2>/dev/null || true)" ]; then
+              MISSING=1
+              break
+            fi
+          done
+
+          if [ "$MISSING" -eq 0 ] && [ "${{ inputs.force_build }}" != "true" ]; then
+            echo "use_local=true" >> "$GITHUB_OUTPUT"
+            echo "Committed VirtIO drivers present. Skipping upstream ISO download."
+          else
+            echo "use_local=false" >> "$GITHUB_OUTPUT"
+            echo "Local drivers missing or force_build enabled. Checking upstream Fedora repository."
+          fi
+
+      - name: Resolve VirtIO Upstream Version (Fallback)
+        id: virtio
+        if: steps.check-local-drivers.outputs.use_local != 'true'
+        run: |
           VER=$(curl -fsSL https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/ \
                 | grep -oE 'virtio-win-[0-9]+\.[0-9]+\.[0-9]+-[0-9]+' \
-                | sort -uV | tail -n1)
-          if [ -z "$VER" ]; then
-            echo "::warning::Could not resolve VirtIO version; falling back to 'stable' cache key."
-            VER="stable"
-          fi
+                | sort -uV | tail -n1 || echo "stable")
           echo "Resolved VirtIO version: $VER"
           echo "virtio_ver=$VER" >> "$GITHUB_OUTPUT"
 
-      - name: Cache VirtIO drivers
+      - name: Cache VirtIO Upstream Drivers
         id: cache-virtio
+        if: steps.check-local-drivers.outputs.use_local != 'true'
         uses: actions/cache@v4
         with:
           path: virtio-drivers
           key: virtio-${{ steps.virtio.outputs.virtio_ver }}
 
-      - name: Download and extract VirtIO drivers
-        if: steps.cache-virtio.outputs.cache-hit != 'true'
+      - name: Download & Extract VirtIO Drivers (Fallback Only)
+        if: steps.check-local-drivers.outputs.use_local != 'true' && steps.cache-virtio.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           mkdir -p virtio-drivers
           echo "Downloading VirtIO ISO (${{ steps.virtio.outputs.virtio_ver }})..."
-          curl -fsSL https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso \
-            -o /tmp/virtio-win.iso
+          curl -fsSL https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso -o /tmp/virtio-win.iso
           echo "Extracting drivers..."
           xorriso -osirrox on -indev /tmp/virtio-win.iso -extract / virtio-drivers/
           rm -f /tmp/virtio-win.iso
 
-      - name: Stage VirtIO drivers for Packer
+      - name: Stage VirtIO Drivers for Packer
         run: |
           set -euo pipefail
-          # The answer file references A:\virtio. Populate build/config/virtio with
-          # the newest amd64 drivers from the extracted ISO, but ONLY overwrite a
-          # committed driver when the upstream version is newer.
           mkdir -p build/config/virtio
 
-          # Extract a comparable version from a driver .inf (DriverVer=MM/DD/YYYY,ver).
-          inf_ver() {
-            # $1 = driver dir; prints "version date" or empty if none found.
-            local inf
-            inf=$(ls "$1"/*.inf 2>/dev/null | head -n1 || true)
-            [ -n "$inf" ] || { echo ""; return; }
-            grep -m1 -oE 'DriverVer *= *[0-9]{2}/[0-9]{2}/[0-9]{4},[0-9.]+' "$inf" \
-              | sed -E 's/.*,([0-9.]+)/\1/' || true
-          }
-
-          for drv in NetKVM vioscsi viostor viorng; do
-            src=$(find "virtio-drivers/$drv" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort -V | tail -n1 || true)
-            [ -n "$src" ] || { echo "::warning::No upstream dir for $drv; keeping committed copy."; continue; }
-
-            dst="build/config/virtio/$drv"
-            up_ver=$(inf_ver "$src")
-            cur_ver=$(inf_ver "$dst")
-
-            # Warn when a version can't be determined so it surfaces in the Actions UI
-            # instead of silently falling back to the committed copy.
-            if [ -z "$up_ver" ]; then
-              echo "::warning::$drv: could not parse upstream DriverVer; cannot compare versions."
-            fi
-            if [ -n "$src" ] && [ -z "$cur_ver" ] && [ -d "$dst" ]; then
-              echo "::warning::$drv: committed driver has no parseable DriverVer; treating upstream as newer."
-            fi
-
-            # Decide: overwrite if no committed version, or upstream sorts newer.
-            if [ -z "$cur_ver" ]; then
-              newer=yes
-            elif [ -n "$up_ver" ] && [ "$(printf '%s\n%s\n' "$cur_ver" "$up_ver" | sort -V | tail -n1)" = "$up_ver" ] && [ "$up_ver" != "$cur_ver" ]; then
-              newer=yes
-            else
-              newer=no
-            fi
-
-            if [ "$newer" = yes ]; then
-              echo "$drv: upstream ${up_ver:-unknown} > committed ${cur_ver:-none} -> updating"
-              mkdir -p "$dst"
-              cp -f "$src"/*.sys "$src"/*.inf "$src"/*.cat "$dst/" 2>/dev/null || true
-            else
-              echo "$drv: committed ${cur_ver:-unknown} is current (upstream ${up_ver:-unknown}) -> keeping"
-            fi
-          done
+          # If using upstream, sync into build/config/virtio
+          if [ "${{ steps.check-local-drivers.outputs.use_local }}" != "true" ]; then
+            for drv in NetKVM vioscsi viostor viorng; do
+              src=$(find "virtio-drivers/$drv" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort -V | tail -n1 || true)
+              if [ -n "$src" ]; then
+                mkdir -p "build/config/virtio/$drv"
+                cp -f "$src"/*.sys "$src"/*.inf "$src"/*.cat "build/config/virtio/$drv/" 2>/dev/null || true
+              fi
+            done
+          fi
 
           echo "Staged VirtIO drivers:"
           ls -R build/config/virtio
 
-      # Render the answer file from the committed template using the secret.
       - name: Generate Autounattend.xml
         run: bash ./scripts/generate-autounattend.sh
 
-      # Write a non-committed Packer variable file from GitHub secrets.
-      # The ISO is the locally cached download from MEGA S4; its checksum is computed
-      # from the actual file so Packer can verify integrity on every run.
-      - name: Write Packer variables from GitHub secrets
+      - name: Write Packer Variables
         run: |
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             IMAGE_VER="${GITHUB_REF_NAME#v}"
@@ -397,25 +264,18 @@ jobs:
           log_ingest_url = "${CLOUDFLARE_LOG_INGEST_URL}"
           log_api_key    = "${LOG_INGEST_KEY}"
           image_version  = "$IMAGE_VER"
-          # Short WinRM timeout while diagnosing setup stalls; bump back up once stable.
           winrm_timeout  = "20m"
           EOF
-
-      - name: Packer Format Check
-        run: packer fmt -check build/
 
       - name: Packer Validate
         run: packer validate -var-file="build/ci.pkrvars.hcl" build/
 
       - name: Packer Build
         run: |
-          # Background: capture the guest screen over VNC every 30s so we can see
-          # where Windows Setup stops if the build stalls at "Waiting for WinRM".
           mkdir -p vnc-captures
           (
             for i in $(seq 1 240); do
-              vncsnapshot -quiet -allowblank 127.0.0.1:0 "vnc-captures/screen_$(date +%H%M%S).jpg" \
-                >/dev/null 2>&1 || true
+              vncsnapshot -quiet -allowblank 127.0.0.1:0 "vnc-captures/screen_$(date +%H%M%S).jpg" >/dev/null 2>&1 || true
               sleep 30
             done
           ) &
@@ -448,14 +308,6 @@ jobs:
           path: vnc-captures/
           retention-days: 7
 
-      - name: Upload image artifact
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-server-golden-image
-          path: output-*
-          retention-days: 7
-
       - name: Compress QCOW2 and Generate Checksum
         run: |
           mkdir -p dist
@@ -464,44 +316,38 @@ jobs:
             IMAGE_TAG="latest"
           fi
 
-          echo "Compressing raw build output..."
+          echo "Compressing raw QCOW2 build output..."
           qemu-img convert -O qcow2 -c \
-            output-windows-server-2022-golden/*.qcow2 \
-            dist/windows-server-2022-golden-${IMAGE_TAG}.qcow2
+            output-*/*.qcow2 \
+            dist/windows-server-${IMAGE_TAG}.qcow2
 
-          echo "Generating SHA-256 checksum..."
+          echo "Generating SHA-256 Checksum..."
           cd dist
-          sha256sum windows-server-2022-golden-${IMAGE_TAG}.qcow2 > windows-server-2022-golden-${IMAGE_TAG}.sha256
+          sha256sum windows-server-${IMAGE_TAG}.qcow2 > windows-server-${IMAGE_TAG}.sha256
           cd ..
 
       - name: Upload Artifacts to MEGA S4
         run: |
-          # 1. Optimize AWS CLI for high-bandwidth, large-file multipart uploads
-          aws configure set default.s3.multipart_threshold 64MB
-          aws configure set default.s3.multipart_chunksize 64MB
-          aws configure set default.s3.max_concurrent_requests 10
-
           IMAGE_TAG="${{ github.ref_name }}"
           if [ -z "$IMAGE_TAG" ] || [ "$IMAGE_TAG" = "main" ]; then
             IMAGE_TAG="latest"
           fi
 
           echo "Uploading versioned image and checksum to MEGA S4..."
-          aws s3 cp dist/windows-server-2022-golden-${IMAGE_TAG}.qcow2 \
-            s3://${S4_BUCKET}/windows-server/${IMAGE_TAG}/image.qcow2 \
-            --endpoint-url ${S4_ENDPOINT} \
+          aws s3 cp dist/windows-server-${IMAGE_TAG}.qcow2 \
+            "s3://${S4_BUCKET}/windows-server/${IMAGE_TAG}/image.qcow2" \
+            --endpoint-url "$S4_ENDPOINT" \
             --no-progress
 
-          aws s3 cp dist/windows-server-2022-golden-${IMAGE_TAG}.sha256 \
-            s3://${S4_BUCKET}/windows-server/${IMAGE_TAG}/image.sha256 \
-            --endpoint-url ${S4_ENDPOINT}
+          aws s3 cp dist/windows-server-${IMAGE_TAG}.sha256 \
+            "s3://${S4_BUCKET}/windows-server/${IMAGE_TAG}/image.sha256" \
+            --endpoint-url "$S4_ENDPOINT"
 
-          # 2. If this was a git release tag (e.g. v1.0.0), also update the 'latest' alias
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             echo "Updating 'latest' pointer on MEGA S4..."
-            aws s3 cp s3://${S4_BUCKET}/windows-server/${IMAGE_TAG}/image.qcow2 \
-              s3://${S4_BUCKET}/windows-server/latest/image.qcow2 \
-              --endpoint-url ${S4_ENDPOINT}
+            aws s3 cp "s3://${S4_BUCKET}/windows-server/${IMAGE_TAG}/image.qcow2" \
+              "s3://${S4_BUCKET}/windows-server/latest/image.qcow2" \
+              --endpoint-url "$S4_ENDPOINT"
           fi
 
           echo "MEGA S4 upload completed successfully."
