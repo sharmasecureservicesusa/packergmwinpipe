@@ -7,3 +7,5 @@ build/config/virtio/virtio-win-gt-x64.msi
 *.auto.pkrvars.hcl
 .DS_Store
 *.swp
+*.png
+*.jpg

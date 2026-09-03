@@ -65,10 +65,15 @@
         <Organization>Packer</Organization>
       </UserData>
     </component>
-    <component name="Microsoft-Windows-PnpCustomizationsWinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <component name="Microsoft-Windows-PnpCustomizationsWinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema">
       <DriverPaths>
+        <!-- Drivers are served from the supplemental CD (floppy is not supported
+             under UEFI). cd_files generates a second CD-ROM that QEMU mounts as
+             E: (the install ISO is D:), and cd_files preserves the sub-directory
+             structure of build/config/virtio, so the viostor storage driver is
+             at E:\viostor. -->
         <PathAndCredentials wcm:keyValue="1" wcm:action="add">
-          <Path>A:\viostor</Path>
+          <Path>E:\viostor</Path>
         </PathAndCredentials>
       </DriverPaths>
     </component>

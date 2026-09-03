@@ -159,6 +159,19 @@ source "qemu" "windows" {
   accelerator    = var.accelerator
   headless       = true
 
+  # Windows Server 2025 requires an UEFI (q35) machine with emulated TPM 2.0.
+  # The ovmf/swtpm packages provide the firmware and software TPM on the runner.
+  machine_type     = "q35"
+  efi_boot         = true
+  vtpm             = true
+  efi_drop_efivars = true
+
+  boot_wait = "5s"
+  boot_command = [
+    "<enter><wait5>",
+    "<enter><wait30>"
+  ]
+
   communicator   = "winrm"
   winrm_username = var.winrm_username
   winrm_password = var.winrm_password
@@ -166,12 +179,14 @@ source "qemu" "windows" {
   winrm_use_ssl  = false
   winrm_insecure = true
 
+  # Answer file + VirtIO storage driver served from the generated supplemental CD.
+  # cd_files preserves the sub-directory structure of a listed directory, so
+  # build/config/virtio lands as /viostor, /NetKVM, etc. on that CD. QEMU mounts
+  # the install ISO as D: and this cd_files CD as E:, so Autounattend.xml points
+  # the windowsPE driver path at E:\viostor.
   cd_files = [
-    "./build/config/Autounattend.xml"
-  ]
-
-  floppy_dirs = [
-    "./build/config/virtio/viostor"
+    "./build/config/Autounattend.xml",
+    "./build/config/virtio"
   ]
 
   qemuargs = var.accelerator == "kvm" ? [
@@ -182,7 +197,7 @@ source "qemu" "windows" {
     ["-smp", "${var.cpu_cores},sockets=1,cores=${var.cpu_cores},threads=1"]
   ]
 
-  vnc_bind_address = "127.0.0.1"
+  vnc_bind_address = "0.0.0.0"
   vnc_port_min     = 5900
   vnc_port_max     = 5900
 
