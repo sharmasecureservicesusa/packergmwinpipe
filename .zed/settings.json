@@ -1,0 +1,14 @@
+{
+  "terminal": {
+    "shell": {
+      "program": "powershell.exe"
+    }
+  },
+  "inlay_hints": {
+    "show_background": true,
+    "enabled": true
+  },
+  "always_treat_brackets_as_autoclosed": true,
+  "show_whitespaces": "all",
+  "soft_wrap": "editor_width"
+}

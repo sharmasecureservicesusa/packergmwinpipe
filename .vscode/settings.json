@@ -1,0 +1,5 @@
+{
+    "editor.defaultFormatter": "IBM.bob-code",
+    "editor.defaultFoldingRangeProvider": "IBM.bob-code",
+    "notebook.defaultFormatter": "IBM.bob-code"
+}
