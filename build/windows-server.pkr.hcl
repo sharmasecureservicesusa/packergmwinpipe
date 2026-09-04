@@ -171,10 +171,6 @@ source "qemu" "windows" {
   efi_drop_efivars  = true
 
   boot_wait = "5s"
-  boot_command = [
-    "<enter><wait5>",
-    "<enter><wait30>"
-  ]
 
   communicator   = "winrm"
   winrm_username = var.winrm_username
@@ -190,6 +186,7 @@ source "qemu" "windows" {
   # driver path at E:\virtio\viostor.
   cd_files = [
     "./build/config/Autounattend.xml",
+    "./build/config/startup.nsh",
     "./build/config/virtio"
   ]
 
