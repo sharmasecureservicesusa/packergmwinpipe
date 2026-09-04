@@ -161,10 +161,14 @@ source "qemu" "windows" {
 
   # Windows Server 2025 requires an UEFI (q35) machine with emulated TPM 2.0.
   # The ovmf/swtpm packages provide the firmware and software TPM on the runner.
-  machine_type     = "q35"
-  efi_boot         = true
-  vtpm             = true
-  efi_drop_efivars = true
+  # Ubuntu 24.04 ships only the 4MB OVMF images, so the plugin defaults
+  # (/usr/share/OVMF/OVMF_CODE.fd) do not exist and must be overridden.
+  machine_type      = "q35"
+  efi_boot          = true
+  efi_firmware_code = "/usr/share/OVMF/OVMF_CODE_4M.fd"
+  efi_firmware_vars = "/usr/share/OVMF/OVMF_VARS_4M.fd"
+  vtpm              = true
+  efi_drop_efivars  = true
 
   boot_wait = "5s"
   boot_command = [
