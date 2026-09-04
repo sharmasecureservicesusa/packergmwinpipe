@@ -187,6 +187,7 @@ source "qemu" "windows" {
   cd_files = [
     "./build/config/Autounattend.xml",
     "./build/config/startup.nsh",
+    "./build/config/setup-winrm.ps1",
     "./build/config/virtio"
   ]
 

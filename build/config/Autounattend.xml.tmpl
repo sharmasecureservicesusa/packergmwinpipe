@@ -17,13 +17,21 @@
           <DiskID>0</DiskID>
           <WillWipeDisk>true</WillWipeDisk>
           <CreatePartitions>
+            <!-- Partition 1: EFI System Partition (ESP) — required for UEFI/GPT boot on q35 -->
             <CreatePartition wcm:action="add">
               <Order>1</Order>
-              <Type>Primary</Type>
-              <Size>500</Size>
+              <Type>EFI</Type>
+              <Size>260</Size>
             </CreatePartition>
+            <!-- Partition 2: Microsoft Reserved Partition (MSR) — required for GPT -->
             <CreatePartition wcm:action="add">
               <Order>2</Order>
+              <Type>MSR</Type>
+              <Size>128</Size>
+            </CreatePartition>
+            <!-- Partition 3: Windows OS partition — expands to fill remaining disk -->
+            <CreatePartition wcm:action="add">
+              <Order>3</Order>
               <Type>Primary</Type>
               <Extend>true</Extend>
             </CreatePartition>
@@ -33,12 +41,16 @@
               <Order>1</Order>
               <PartitionID>1</PartitionID>
               <Label>System</Label>
-              <Format>NTFS</Format>
-              <Active>true</Active>
+              <Format>FAT32</Format>
             </ModifyPartition>
             <ModifyPartition wcm:action="add">
               <Order>2</Order>
               <PartitionID>2</PartitionID>
+              <!-- MSR: no format, no label -->
+            </ModifyPartition>
+            <ModifyPartition wcm:action="add">
+              <Order>3</Order>
+              <PartitionID>3</PartitionID>
               <Label>Windows</Label>
               <Format>NTFS</Format>
             </ModifyPartition>
@@ -49,7 +61,7 @@
         <OSImage>
           <InstallTo>
             <DiskID>0</DiskID>
-            <PartitionID>2</PartitionID>
+            <PartitionID>3</PartitionID>
           </InstallTo>
           <InstallFrom>
             <MetaData wcm:action="add">
@@ -96,7 +108,9 @@
       <AutoLogon>
         <Username>Administrator</Username>
         <Enabled>true</Enabled>
-        <LogonCount>1</LogonCount>
+        <!-- LogonCount=99 ensures FirstLogonCommands run — a count of 1 can be
+             consumed by Windows OOBE before the desktop logon occurs. -->
+        <LogonCount>99</LogonCount>
         <Password>
           <Value>${WINRM_PASSWORD_XML}</Value>
           <PlainText>true</PlainText>
@@ -111,27 +125,14 @@
       <FirstLogonCommands>
         <SynchronousCommand wcm:action="add">
           <Order>1</Order>
-          <CommandLine>cmd.exe /c winrm quickconfig -q</CommandLine>
+          <CommandLine>powershell -NoProfile -ExecutionPolicy Bypass -Command "Set-ExecutionPolicy Bypass -Scope LocalMachine -Force"</CommandLine>
         </SynchronousCommand>
+        <!-- Run WinRM setup via a PowerShell script on the supplemental CD (E:).
+             The script retries until the WinRM listener is confirmed on port 5985,
+             working around races where the NIC is not yet ready at first logon. -->
         <SynchronousCommand wcm:action="add">
           <Order>2</Order>
-          <CommandLine>cmd.exe /c winrm set winrm/config/service @{AllowUnencrypted="true"}</CommandLine>
-        </SynchronousCommand>
-        <SynchronousCommand wcm:action="add">
-          <Order>3</Order>
-          <CommandLine>cmd.exe /c winrm set winrm/config/service/auth @{Basic="true"}</CommandLine>
-        </SynchronousCommand>
-        <SynchronousCommand wcm:action="add">
-          <Order>4</Order>
-          <CommandLine>cmd.exe /c netsh advfirewall firewall add rule name="WinRM 5985" protocol=TCP dir=in localport=5985 action=allow</CommandLine>
-        </SynchronousCommand>
-        <SynchronousCommand wcm:action="add">
-          <Order>5</Order>
-          <CommandLine>powershell -Command "Set-ExecutionPolicy Bypass -Scope LocalMachine -Force"</CommandLine>
-        </SynchronousCommand>
-        <SynchronousCommand wcm:action="add">
-          <Order>6</Order>
-          <CommandLine>cmd.exe /c net start winrm</CommandLine>
+          <CommandLine>powershell -NoProfile -ExecutionPolicy Bypass -File E:\setup-winrm.ps1</CommandLine>
         </SynchronousCommand>
       </FirstLogonCommands>
       <OOBE>
