@@ -1,3 +1,56 @@
+	},
+	"base_keymap": "VSCode",
+	"minimap": {
+		"show": "always",
+	},
+	"autosave":              "on_window_change",
+	"file_types":            {},
+	"show_edit_predictions": true,
+	"soft_wrap":             "bounded",
+	"ui_font_size":          16,
+	"buffer_font_size":      15,
+	"theme": {
+		"mode":  "dark",
+		"light": "Dawnfox - blurred",
+		"dark":  "JetBrains Islands Dark",
+	},
+	"context_servers": {"github-activity-summarizer": {
+                               "enabled": true,
+                               "remote": false,
+                               "settings": {}
+                     },
+                     "chrome-devtools-mcp-zed": {
+                               "enabled": true,
+                               "remote": false,
+                               "settings": {
+                                         "browser_url": null,
+                                         "ws_endpoint": null,
+                                         "ws_headers": null,
+                                         "auto_connect": null,
+                                         "channel": null,
+                                         "headless": null,
+                                         "isolated": null,
+                                         "user_data_dir": null,
+                                         "viewport": null,
+                                         "executable_path": null,
+                                         "chrome_arg": [],
+                                         "proxy_server": null,
+                                         "accept_insecure_certs": null,
+                                         "category_emulation": null,
+                                         "category_performance": null,
+                                         "category_network": null,
+                                         "log_file": null,
+                                         "extra_args": []
+                               }
+                     },
+                     "GitKraken": {
+  "args": [
+			"mcp",
+			"--host=zed",
+			"--session=kepler",
+		]
+		\
+
 {
   "terminal": {
     "shell": {
