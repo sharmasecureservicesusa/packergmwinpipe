@@ -292,7 +292,7 @@ jobs:
             --arg log_api_key "$LOG_API_KEY" \
             --arg log_ingest_url "$LOG_INGEST_URL" \
             --arg winrm_password "$WINRM_PASSWORD" \
-            '{accelerator: $accelerator, git_commit: $git_commit, image_version: $image_version, iso_checksum: $iso_checksum, iso_url: $iso_url, log_api_key: $log_api_key, log_ingest_url: $log_ingest_url, winrm_password: $winrm_password, winrm_timeout: "45m"}' \
+            '{accelerator: $accelerator, git_commit: $git_commit, image_version: $image_version, iso_checksum: $iso_checksum, iso_url: $iso_url, log_api_key: $log_api_key, log_ingest_url: $log_ingest_url, winrm_password: $winrm_password, winrm_timeout: "90m"}' \
             > build/ci.pkrvars.json
       - name: Validate Packer Build
         env:

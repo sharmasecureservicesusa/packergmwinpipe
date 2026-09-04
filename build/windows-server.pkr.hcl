@@ -159,8 +159,11 @@ source "qemu" "windows" {
   accelerator    = var.accelerator
   headless       = true
 
-  # Windows Server 2025 requires an UEFI (q35) machine with emulated TPM 2.0.
-  # The ovmf/swtpm packages provide the firmware and software TPM on the runner.
+  # cpu_model lets Packer set -cpu without triggering qemuargs override mode.
+  # "host" exposes all host CPU features (KVM only); "max" is the TCG equivalent.
+  cpu_model = var.accelerator == "kvm" ? "host" : "max"
+
+  # Windows Server 2025 requires a UEFI (q35) machine with emulated TPM 2.0.
   # Ubuntu 24.04 ships only the 4MB OVMF images, so the plugin defaults
   # (/usr/share/OVMF/OVMF_CODE.fd) do not exist and must be overridden.
   machine_type      = "q35"
@@ -179,24 +182,16 @@ source "qemu" "windows" {
   winrm_use_ssl  = false
   winrm_insecure = true
 
-  # Answer file + VirtIO storage driver served from the generated supplemental CD.
-  # cd_files preserves the build/config/virtio base directory on the CD, so the
-  # drivers land as /virtio/viostor, /virtio/NetKVM, etc. QEMU mounts the install
-  # ISO as D: and this cd_files CD as E:, so Autounattend.xml points the windowsPE
-  # driver path at E:\virtio\viostor.
+  # Supplemental CD contains the answer file, VirtIO storage driver, and WinRM
+  # setup script.  cd_label fixes the volume label so Windows Setup reliably
+  # assigns drive letter E: to this disc (the install ISO is always D:).
+  # startup.nsh is intentionally NOT included: if the UEFI/EFI shell finds it on
+  # the supplemental CD it runs before the Windows installer boots and may loop.
+  cd_label = "PACKERSUP"
   cd_files = [
     "./build/config/Autounattend.xml",
-    "./build/config/startup.nsh",
     "./build/config/setup-winrm.ps1",
     "./build/config/virtio"
-  ]
-
-  qemuargs = var.accelerator == "kvm" ? [
-    ["-cpu", "host"],
-    ["-smp", "${var.cpu_cores},sockets=1,cores=${var.cpu_cores},threads=1"]
-    ] : [
-    ["-cpu", "max"],
-    ["-smp", "${var.cpu_cores},sockets=1,cores=${var.cpu_cores},threads=1"]
   ]
 
   vnc_bind_address = "0.0.0.0"
