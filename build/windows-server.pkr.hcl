@@ -123,6 +123,11 @@ variable "winrm_timeout" {
   default     = "2h"
 }
 
+variable "supplemental_iso" {
+  type        = string
+  description = "Path to the pre-built supplemental ISO (Autounattend.xml + VirtIO drivers + setup-winrm.ps1)"
+}
+
 variable "log_ingest_url" {
   type        = string
   description = "Cloudflare Pipelines HTTP ingestion endpoint URL"
@@ -159,10 +164,6 @@ source "qemu" "windows" {
   accelerator    = var.accelerator
   headless       = true
 
-  # cpu_model lets Packer set -cpu without triggering qemuargs override mode.
-  # "host" exposes all host CPU features (KVM only); "max" is the TCG equivalent.
-  cpu_model = var.accelerator == "kvm" ? "host" : "max"
-
   # Windows Server 2025 requires a UEFI (q35) machine with emulated TPM 2.0.
   # Ubuntu 24.04 ships only the 4MB OVMF images, so the plugin defaults
   # (/usr/share/OVMF/OVMF_CODE.fd) do not exist and must be overridden.
@@ -182,16 +183,51 @@ source "qemu" "windows" {
   winrm_use_ssl  = false
   winrm_insecure = true
 
-  # Supplemental CD contains the answer file, VirtIO storage driver, and WinRM
-  # setup script.  cd_label fixes the volume label so Windows Setup reliably
-  # assigns drive letter E: to this disc (the install ISO is always D:).
-  # startup.nsh is intentionally NOT included: if the UEFI/EFI shell finds it on
-  # the supplemental CD it runs before the Windows installer boots and may loop.
-  cd_label = "PACKERSUP"
-  cd_files = [
-    "./build/config/Autounattend.xml",
-    "./build/config/setup-winrm.ps1",
-    "./build/config/virtio"
+  # On a q35 machine OVMF can only boot from CD-ROMs on an AHCI bus.
+  # Packer's plugin attaches ISOs as plain "-drive media=cdrom" which lands on
+  # an implicit ISA-IDE controller invisible to OVMF — causing the
+  # "BdsDxe: failed to start DVD-ROM: Time out" failure seen in VNC captures.
+  #
+  # The fix: build the supplemental ISO ourselves in CI at a known path and pass
+  # it via var.supplemental_iso, then use qemuargs to wire both discs onto an
+  # explicit ich9-ahci controller that OVMF can enumerate correctly.
+  #
+  # qemuargs replaces ALL Packer-generated QEMU args, so every device is listed.
+  qemuargs = [
+    ["-cpu", var.accelerator == "kvm" ? "host" : "max"],
+    ["-smp", "${var.cpu_cores},sockets=1,cores=${var.cpu_cores},threads=1"],
+    ["-m", "${var.memory_mb}M"],
+    ["-machine", "type=q35,accel=${var.accelerator}"],
+
+    # OS disk — virtio-blk
+    ["-drive", "file=output-${var.vm_name}/${var.vm_name}-v${var.image_version}.qcow2,if=virtio,cache=writeback,discard=ignore,format=qcow2"],
+
+    # AHCI controller so OVMF can see CD-ROMs on q35
+    ["-device", "ich9-ahci,id=ahci"],
+
+    # Windows install ISO → D: in Windows
+    ["-drive", "file=${var.iso_url},media=cdrom,if=none,id=cdrom0,readonly=on"],
+    ["-device", "ide-cd,bus=ahci.0,drive=cdrom0"],
+
+    # Supplemental ISO (Autounattend + VirtIO drivers + setup-winrm.ps1) → E: in Windows
+    ["-drive", "file=${var.supplemental_iso},media=cdrom,if=none,id=cdrom1,readonly=on"],
+    ["-device", "ide-cd,bus=ahci.1,drive=cdrom1"],
+
+    # Network with WinRM port-forward
+    ["-device", "e1000,netdev=user.0"],
+    ["-netdev", "user,id=user.0,hostfwd=tcp::{{.WinRMPort}}-:5985"],
+
+    # OVMF firmware pflash
+    ["-drive", "file=/usr/share/OVMF/OVMF_CODE_4M.fd,if=pflash,unit=0,format=raw,readonly=on"],
+    ["-drive", "file=output-${var.vm_name}/efivars.fd,if=pflash,unit=1,format=raw"],
+
+    # TPM 2.0 via swtpm socket (started automatically by Packer vtpm=true)
+    ["-chardev", "socket,id=vtpm,path=/tmp/{{.BuildName}}/vtpm.sock"],
+    ["-tpmdev", "emulator,id=tpm0,chardev=vtpm"],
+    ["-device", "tpm-tis,tpmdev=tpm0"],
+
+    ["-vnc", "0.0.0.0:0"],
+    ["-name", "${var.vm_name}-v${var.image_version}.qcow2"],
   ]
 
   vnc_bind_address = "0.0.0.0"

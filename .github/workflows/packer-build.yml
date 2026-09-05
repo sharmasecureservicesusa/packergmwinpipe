@@ -22,7 +22,10 @@ on:
 
 concurrency:
   group: golden-image-${{ github.ref }}
-  cancel-in-progress: true
+  # Never cancel an in-progress build job — a Windows image build takes 30-60
+  # minutes and canceling mid-run wastes the entire runner cost and produces no
+  # artifact.  Validate/test jobs are cheap and can be safely superseded.
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -248,9 +251,6 @@ jobs:
           mkdir -p build/config/virtio/viostor
           cp -a "$driver_dir/." build/config/virtio/viostor/
           cp "$installer" build/config/virtio/virtio-win-gt-x64.msi
-          # Files extracted from the virtio-win ISO can carry restrictive modes;
-          # ensure Packer's cd_files CD builder can read them and create
-          # directories with the same (writable) mode in its temp staging area.
           chmod -R a+rwX build/config/virtio
       - name: Resolve Image Version
         id: version
@@ -281,6 +281,21 @@ jobs:
           WINRM_PASSWORD: ${{ secrets.WINRM_PASSWORD }}
         run: |
           bash scripts/generate-autounattend.sh
+
+          # Build the supplemental ISO at a known path so qemuargs can reference
+          # it directly on an ich9-ahci bus.  Packer's cd_files mechanism writes
+          # to a random /tmp path that cannot be referenced from qemuargs.
+          sup_iso="$GITHUB_WORKSPACE/supplemental.iso"
+          xorriso -as mkisofs \
+            -o "$sup_iso" \
+            -V PACKERSUP \
+            -iso-level 3 \
+            -udf \
+            build/config/Autounattend.xml \
+            build/config/setup-winrm.ps1 \
+            build/config/virtio
+          echo "Supplemental ISO: $sup_iso ($(du -sh "$sup_iso" | cut -f1))"
+
           iso_path="$GITHUB_WORKSPACE/iso/Winserver2025-VirtIO.iso"
           iso_checksum=$(sha256sum "$iso_path" | awk '{print $1}')
           jq -n \
@@ -291,8 +306,9 @@ jobs:
             --arg iso_url "$iso_path" \
             --arg log_api_key "$LOG_API_KEY" \
             --arg log_ingest_url "$LOG_INGEST_URL" \
+            --arg supplemental_iso "$sup_iso" \
             --arg winrm_password "$WINRM_PASSWORD" \
-            '{accelerator: $accelerator, git_commit: $git_commit, image_version: $image_version, iso_checksum: $iso_checksum, iso_url: $iso_url, log_api_key: $log_api_key, log_ingest_url: $log_ingest_url, winrm_password: $winrm_password, winrm_timeout: "90m"}' \
+            '{accelerator: $accelerator, git_commit: $git_commit, image_version: $image_version, iso_checksum: $iso_checksum, iso_url: $iso_url, log_api_key: $log_api_key, log_ingest_url: $log_ingest_url, supplemental_iso: $supplemental_iso, winrm_password: $winrm_password, winrm_timeout: "90m"}' \
             > build/ci.pkrvars.json
       - name: Validate Packer Build
         env:
