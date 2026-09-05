@@ -215,7 +215,7 @@ source "qemu" "windows" {
 
     # Network with WinRM port-forward
     ["-device", "e1000,netdev=user.0"],
-    ["-netdev", "user,id=user.0,hostfwd=tcp::{{.WinRMPort}}-:5985"],
+    ["-netdev", "user,id=user.0,hostfwd=tcp::{{.SSHHostPort}}-:5985"],
 
     # OVMF firmware pflash
     ["-drive", "file=/usr/share/OVMF/OVMF_CODE_4M.fd,if=pflash,unit=0,format=raw,readonly=on"],
