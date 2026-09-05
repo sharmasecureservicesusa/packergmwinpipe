@@ -1,4 +1,14 @@
-	},
+{
+  "context_servers": {
+    "gemini-api-docs-mcp": {
+      "source": "custom",
+      "type": "http",
+      "url": "https://gemini-api-docs-mcp.dev",
+      "headers": {}
+    }
+  }
+}
+},
 	"base_keymap": "VSCode",
 	"minimap": {
 		"show": "always",
