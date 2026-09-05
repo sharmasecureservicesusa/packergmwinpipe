@@ -171,8 +171,11 @@ source "qemu" "windows" {
   efi_boot          = true
   efi_firmware_code = "/usr/share/OVMF/OVMF_CODE_4M.fd"
   efi_firmware_vars = "/usr/share/OVMF/OVMF_VARS_4M.fd"
-  vtpm              = true
-  efi_drop_efivars  = true
+  # vtpm is NOT set here — the CI workflow starts swtpm at a fixed socket path
+  # (/tmp/packer-vtpm/vtpm.sock) before packer runs, and qemuargs wires it in.
+  # Setting vtpm=true while also using qemuargs would cause the plugin to start
+  # a second swtpm at a different path and conflict with our explicit -chardev.
+  efi_drop_efivars = true
 
   boot_wait = "5s"
 
@@ -214,15 +217,19 @@ source "qemu" "windows" {
     ["-device", "ide-cd,bus=ahci.1,drive=cdrom1"],
 
     # Network with WinRM port-forward
+    # {{.WinRMPort}} is the only qemuargs template variable available for the
+    # communicator port — Packer resolves it to the chosen host-side port.
     ["-device", "e1000,netdev=user.0"],
-    ["-netdev", "user,id=user.0,hostfwd=tcp::{{.SSHHostPort}}-:5985"],
+    ["-netdev", "user,id=user.0,hostfwd=tcp::{{.WinRMPort}}-:5985"],
 
     # OVMF firmware pflash
     ["-drive", "file=/usr/share/OVMF/OVMF_CODE_4M.fd,if=pflash,unit=0,format=raw,readonly=on"],
     ["-drive", "file=output-${var.vm_name}/efivars.fd,if=pflash,unit=1,format=raw"],
 
-    # TPM 2.0 via swtpm socket (started automatically by Packer vtpm=true)
-    ["-chardev", "socket,id=vtpm,path=/tmp/{{.BuildName}}/vtpm.sock"],
+    # TPM 2.0 — swtpm is started by Packer (vtpm=true) with a socket at a
+    # fixed path we pre-create in CI: /tmp/packer-vtpm/vtpm.sock
+    # {{.BuildName}} is NOT available in qemuargs; use the fixed path instead.
+    ["-chardev", "socket,id=vtpm,path=/tmp/packer-vtpm/vtpm.sock"],
     ["-tpmdev", "emulator,id=tpm0,chardev=vtpm"],
     ["-device", "tpm-tis,tpmdev=tpm0"],
 

@@ -313,6 +313,24 @@ jobs:
         env:
           HCP_PACKER_REGISTRY: 'OFF'
         run: packer validate -var-file=build/ci.pkrvars.json build/
+      - name: Start swtpm
+        run: |
+          # Start swtpm at a fixed socket path so qemuargs can reference it
+          # directly. Packer's vtpm=true would use a random path incompatible
+          # with our explicit qemuargs -chardev entry.
+          mkdir -p /tmp/packer-vtpm
+          swtpm socket \
+            --tpmstate dir=/tmp/packer-vtpm \
+            --ctrl type=unixio,path=/tmp/packer-vtpm/vtpm.sock \
+            --tpm2 \
+            --daemon
+          # Wait for the socket to appear
+          for i in $(seq 1 10); do
+            [[ -S /tmp/packer-vtpm/vtpm.sock ]] && break
+            sleep 1
+          done
+          [[ -S /tmp/packer-vtpm/vtpm.sock ]] || { echo '::error::swtpm socket did not appear'; exit 1; }
+          echo 'swtpm started at /tmp/packer-vtpm/vtpm.sock'
       - name: Build Image
         env:
           HCP_CLIENT_ID: ${{ secrets.HCP_CLIENT_ID }}
