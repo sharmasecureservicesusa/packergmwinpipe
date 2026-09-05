@@ -290,7 +290,6 @@ jobs:
             -o "$sup_iso" \
             -V PACKERSUP \
             -iso-level 3 \
-            -udf \
             build/config/Autounattend.xml \
             build/config/setup-winrm.ps1 \
             build/config/virtio
