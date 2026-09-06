@@ -216,11 +216,11 @@ source "qemu" "windows" {
     ["-drive", "file=${var.supplemental_iso},media=cdrom,if=none,id=cdrom1,readonly=on"],
     ["-device", "ide-cd,bus=ahci.1,drive=cdrom1"],
 
-    # Network with WinRM port-forward
-    # {{.WinRMPort}} is the only qemuargs template variable available for the
-    # communicator port — Packer resolves it to the chosen host-side port.
+    # Network with WinRM port-forward.
+    # {{.SSHHostPort}} is the ONLY port variable in qemuArgsTemplateData —
+    # it holds the host-side communicator port Packer selected (WinRM or SSH).
     ["-device", "e1000,netdev=user.0"],
-    ["-netdev", "user,id=user.0,hostfwd=tcp::{{.WinRMPort}}-:5985"],
+    ["-netdev", "user,id=user.0,hostfwd=tcp::{{.SSHHostPort}}-:5985"],
 
     # OVMF firmware pflash
     ["-drive", "file=/usr/share/OVMF/OVMF_CODE_4M.fd,if=pflash,unit=0,format=raw,readonly=on"],
